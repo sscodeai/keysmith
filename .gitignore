@@ -1,0 +1,16 @@
+# Build artifacts
+/bin/
+/dist/
+
+# Store data (NEVER commit secrets or keys)
+.secret-mcp/
+*.enc
+key.txt
+
+# Test scratch
+/tmp/
+e2e-val.txt
+
+# Go
+*.test
+*.out
