@@ -191,6 +191,11 @@ func (s *Server) Run(ctx context.Context) error {
 	return s.mcp.Run(ctx, &mcp.StdioTransport{})
 }
 
+// Handler returns the underlying SDK server, for HTTP/SSE serving.
+func (s *Server) Handler() *mcp.Server {
+	return s.mcp
+}
+
 // readValueFile reads a secret value from a file (single line, trailing newline
 // stripped). The file is removed after reading to avoid leaving plaintext.
 func readValueFile(path string) (string, error) {

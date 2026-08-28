@@ -24,20 +24,25 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 
+	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/sscodeai/secret-mcp/internal/leakscan"
 	"github.com/sscodeai/secret-mcp/internal/mask"
 	"github.com/sscodeai/secret-mcp/internal/mcp"
 	"github.com/sscodeai/secret-mcp/internal/store"
+	"github.com/sscodeai/secret-mcp/internal/vault"
 )
 
-var version = "0.2.0"
+var version = "0.3.0"
 
 func main() {
 	storeDir := flag.String("store", defaultStoreDir(), "directory holding age-encrypted secrets (key.txt + secrets.enc)")
+	httpAddr := flag.String("http", "", "serve MCP over HTTP/SSE on this address (e.g. :8080) instead of stdio")
+	vaultAddr := flag.String("vault", "", "HashiCorp Vault address (e.g. http://127.0.0.1:8200) — use Vault as backend")
 	showVer := flag.Bool("version", false, "print version and exit")
 	flag.Parse()
 
@@ -48,19 +53,19 @@ func main() {
 
 	args := flag.Args()
 
-	// No subcommand → MCP server mode (stdio).
+	// No subcommand → MCP server mode (stdio or HTTP/SSE).
 	if len(args) == 0 {
-		runMCPServer(*storeDir)
+		runMCPServer(*storeDir, *httpAddr, *vaultAddr)
 		return
 	}
 
 	// Subcommand → CLI mode.
-	if err := runCLI(*storeDir, args); err != nil {
+	if err := runCLI(*storeDir, *vaultAddr, args); err != nil {
 		log.Fatalf("secret-mcp: %v", err)
 	}
 }
 
-func runMCPServer(storeDir string) {
+func runMCPServer(storeDir, httpAddr, vaultAddr string) {
 	st, err := store.New(storeDir)
 	if err != nil {
 		log.Fatalf("store init: %v", err)
@@ -69,18 +74,43 @@ func runMCPServer(storeDir string) {
 	if err != nil {
 		log.Fatalf("mcp init: %v", err)
 	}
+
+	// HTTP/SSE mode: serve over HTTP (remote agents).
+	if httpAddr != "" {
+		handler := sdk.NewSSEHandler(func(*http.Request) *sdk.Server { return srv.Handler() }, nil)
+		log.Printf("secret-mcp serving MCP over SSE on %s", httpAddr)
+		log.Printf("  endpoint: http://localhost%s/sse", httpAddr)
+		if err := http.ListenAndServe(httpAddr, handler); err != nil {
+			log.Fatalf("http server: %v", err)
+		}
+		return
+	}
+
+	// stdio mode (default).
 	if err := srv.Run(context.Background()); err != nil {
 		log.Fatalf("server: %v", err)
 	}
 }
 
-func runCLI(storeDir string, args []string) error {
+func runCLI(storeDir, vaultAddr string, args []string) error {
 	cmd := args[0]
 	rest := args[1:]
 
 	st, err := store.New(storeDir)
 	if err != nil {
 		return fmt.Errorf("store init: %w", err)
+	}
+
+	// Vault-backed commands need a Vault client.
+	makeVault := func() (*vault.Client, error) {
+		if vaultAddr == "" {
+			return nil, fmt.Errorf("vault address required: pass -vault http://127.0.0.1:8200")
+		}
+		token := os.Getenv("VAULT_TOKEN")
+		if token == "" {
+			return nil, fmt.Errorf("VAULT_TOKEN env var required")
+		}
+		return vault.NewClient(vaultAddr, token, "secret"), nil
 	}
 
 	switch cmd {
@@ -183,6 +213,84 @@ func runCLI(storeDir string, args []string) error {
 			return err
 		}
 		fmt.Print(leakscan.Format(results))
+		return nil
+
+	case "vault-kv-get":
+		// secret-mcp vault-kv-get KEY  (masked by default, --unsafe for plaintext)
+		if len(rest) < 1 {
+			return fmt.Errorf("vault-kv-get requires a key")
+		}
+		vc, err := makeVault()
+		if err != nil {
+			return err
+		}
+		val, err := vc.GetKV(context.Background(), rest[0])
+		if err != nil {
+			return err
+		}
+		if containsFlag(rest, "--unsafe") {
+			fmt.Println(val)
+		} else {
+			fmt.Println(mask.Mask(val))
+		}
+		return nil
+
+	case "vault-kv-set":
+		// secret-mcp vault-kv-set KEY  (value from stdin, no echo)
+		if len(rest) < 1 {
+			return fmt.Errorf("vault-kv-set requires a key")
+		}
+		vc, err := makeVault()
+		if err != nil {
+			return err
+		}
+		val, err := io.ReadAll(os.Stdin)
+		if err != nil {
+			return fmt.Errorf("read stdin: %w", err)
+		}
+		value := strings.TrimSuffix(string(val), "\n")
+		value = strings.TrimSuffix(value, "\r")
+		if value == "" {
+			return fmt.Errorf("empty value from stdin")
+		}
+		if err := vc.SetKV(context.Background(), rest[0], value); err != nil {
+			return err
+		}
+		fmt.Printf("stored %s in vault (masked: %s)\n", rest[0], mask.Mask(value))
+		return nil
+
+	case "vault-kv-list":
+		vc, err := makeVault()
+		if err != nil {
+			return err
+		}
+		items, err := vc.ListKV(context.Background())
+		if err != nil {
+			return err
+		}
+		for k, v := range items {
+			fmt.Printf("%s=%s\n", k, v)
+		}
+		return nil
+
+	case "vault-db-creds":
+		// secret-mcp vault-db-creds ROLE  — dynamic short-TTL DB credentials
+		if len(rest) < 1 {
+			return fmt.Errorf("vault-db-creds requires a role")
+		}
+		vc, err := makeVault()
+		if err != nil {
+			return err
+		}
+		creds, err := vc.GetDBCreds(context.Background(), rest[0])
+		if err != nil {
+			return err
+		}
+		fmt.Printf("username: %s\n", creds.Username)
+		fmt.Printf("password: %s (masked)\n", mask.Mask(creds.Password))
+		fmt.Printf("lease_id: %s\n", creds.LeaseID)
+		fmt.Printf("ttl: %ds (auto-expires — leaked cred is harmless)\n", creds.LeaseTTL)
+		fmt.Printf("renewable: %v\n", creds.Renewable)
 		return nil
 
 	case "help", "-h", "--help":
