@@ -1,4 +1,4 @@
-module github.com/sscodeai/secret-mcp
+module github.com/sscodeai/keysmith
 
 go 1.25.13
 

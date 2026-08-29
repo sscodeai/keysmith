@@ -15,8 +15,8 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/sscodeai/secret-mcp/internal/mask"
-	"github.com/sscodeai/secret-mcp/internal/store"
+	"github.com/sscodeai/keysmith/internal/mask"
+	"github.com/sscodeai/keysmith/internal/store"
 )
 
 // ScanResult describes one detected leak.

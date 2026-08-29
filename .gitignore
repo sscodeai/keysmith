@@ -3,7 +3,7 @@
 /dist/
 
 # Store data (NEVER commit secrets or keys)
-.secret-mcp/
+.keysmith/
 *.enc
 key.txt
 

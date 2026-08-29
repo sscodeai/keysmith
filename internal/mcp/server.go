@@ -19,8 +19,8 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"github.com/sscodeai/secret-mcp/internal/mask"
-	"github.com/sscodeai/secret-mcp/internal/store"
+	"github.com/sscodeai/keysmith/internal/mask"
+	"github.com/sscodeai/keysmith/internal/store"
 )
 
 // Server wraps a secret store as an MCP server.
@@ -33,7 +33,7 @@ type Server struct {
 func NewServer(st *store.Store) (*Server, error) {
 	s := &Server{store: st}
 	srv := mcp.NewServer(&mcp.Implementation{
-		Name:    "secret-mcp",
+		Name:    "keysmith",
 		Version: "0.1.0",
 	}, nil)
 

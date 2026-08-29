@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/sscodeai/secret-mcp/internal/store"
+	"github.com/sscodeai/keysmith/internal/store"
 )
 
 // setupRepo creates a throwaway git repo at dir with one commit containing a

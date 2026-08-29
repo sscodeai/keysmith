@@ -1,15 +1,15 @@
 ---
-name: secret-mcp
-description: "Route ALL secret operations through the secret-mcp MCP server — never read .env/secret files directly. Values stay masked; plaintext never enters context."
+name: keysmith
+description: "Route ALL secret operations through the keysmith MCP server — never read .env/secret files directly. Values stay masked; plaintext never enters context."
 version: 1.0.0
 ---
 
-# secret-mcp — Agent-safe Secret Handling
+# keysmith — Agent-safe Secret Handling
 
 ## When to use
 Any time the agent needs to read, write, list, or rotate a credential
 (API key, token, password, DSN, .env value) — either in this codebase or
-in a project where the secret-mcp server is configured.
+in a project where the keysmith server is configured.
 
 ## Hard rules (non-negotiable)
 1. **NEVER `cat` a `.env` file, `secrets.enc`, or any secret-bearing file.**
@@ -33,7 +33,7 @@ in a project where the secret-mcp server is configured.
 ## Pitfalls
 - Passing the plaintext value as the `put` argument defeats the design —
   it lands in the transcript. Always use `value_file`.
-- The store dir (`~/.secret-mcp` by default) contains `key.txt` (the age
+- The store dir (`~/.keysmith` by default) contains `key.txt` (the age
   private key). Never read, copy, or commit it.
 - `secrets.enc` is an armored age blob — it is SAFE to read into context
   (ciphertext), but don't, because it bloats context for no value.

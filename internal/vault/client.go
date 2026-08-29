@@ -1,4 +1,4 @@
-// Package vault implements a HashiCorp Vault backend for secret-mcp,
+// Package vault implements a HashiCorp Vault backend for keysmith,
 // providing dynamic short-TTL secrets: a leaked credential expires on its
 // own (lease TTL), which is the strongest "leak harmless" guarantee.
 //
@@ -20,7 +20,7 @@ import (
 )
 
 // Client is a minimal Vault HTTP API client. It deliberately implements only
-// the endpoints secret-mcp needs (KV read/write, database creds, lease info)
+// the endpoints keysmith needs (KV read/write, database creds, lease info)
 // to keep dependencies minimal — no huge SDK.
 type Client struct {
 	addr     string // e.g. http://127.0.0.1:8200

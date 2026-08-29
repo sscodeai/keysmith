@@ -1,18 +1,18 @@
-// Command secret-mcp is an MCP server + CLI for AI-agent-safe secret
+// Command keysmith is an MCP server + CLI for AI-agent-safe secret
 // management.
 //
 // MCP server mode (default, stdio transport):
 //
-//	secret-mcp -store ~/.secret-mcp
+//	keysmith -store ~/.keysmith
 //
 // CLI mode (subcommands, share the same encrypted store):
 //
-//	secret-mcp list                       # masked values only
-//	secret-mcp get KEY                    # masked value (default)
-//	secret-mcp get KEY --unsafe           # plaintext (last resort)
-//	secret-mcp set KEY < value.txt        # read value from stdin, no echo
-//	secret-mcp rotate KEY [length]        # generate + store new strong secret
-//	secret-mcp delete KEY
+//	keysmith list                       # masked values only
+//	keysmith get KEY                    # masked value (default)
+//	keysmith get KEY --unsafe           # plaintext (last resort)
+//	keysmith set KEY < value.txt        # read value from stdin, no echo
+//	keysmith rotate KEY [length]        # generate + store new strong secret
+//	keysmith delete KEY
 //
 // Security: plaintext values never appear in shell history, process lists, or
 // command output — set reads from stdin, get masks by default.
@@ -30,11 +30,11 @@ import (
 	"strings"
 
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
-	"github.com/sscodeai/secret-mcp/internal/leakscan"
-	"github.com/sscodeai/secret-mcp/internal/mask"
-	"github.com/sscodeai/secret-mcp/internal/mcp"
-	"github.com/sscodeai/secret-mcp/internal/store"
-	"github.com/sscodeai/secret-mcp/internal/vault"
+	"github.com/sscodeai/keysmith/internal/leakscan"
+	"github.com/sscodeai/keysmith/internal/mask"
+	"github.com/sscodeai/keysmith/internal/mcp"
+	"github.com/sscodeai/keysmith/internal/store"
+	"github.com/sscodeai/keysmith/internal/vault"
 )
 
 var version = "0.3.0"
@@ -48,7 +48,7 @@ func main() {
 	flag.Parse()
 
 	if *showVer {
-		fmt.Printf("secret-mcp %s\n", version)
+		fmt.Printf("keysmith %s\n", version)
 		return
 	}
 
@@ -62,7 +62,7 @@ func main() {
 
 	// Subcommand → CLI mode.
 	if err := runCLI(*storeDir, *vaultAddr, args); err != nil {
-		log.Fatalf("secret-mcp: %v", err)
+		log.Fatalf("keysmith: %v", err)
 	}
 }
 
@@ -84,11 +84,11 @@ func runMCPServer(storeDir, httpAddr, vaultAddr string, streamable bool) {
 		if streamable {
 			handler = sdk.NewStreamableHTTPHandler(func(*http.Request) *sdk.Server { return srv.Handler() },
 				&sdk.StreamableHTTPOptions{JSONResponse: true, Stateless: true})
-			log.Printf("secret-mcp serving MCP Streamable HTTP (stateless) on %s", httpAddr)
+			log.Printf("keysmith serving MCP Streamable HTTP (stateless) on %s", httpAddr)
 			log.Printf("  endpoint: http://localhost%s/mcp", httpAddr)
 		} else {
 			handler = sdk.NewSSEHandler(func(*http.Request) *sdk.Server { return srv.Handler() }, nil)
-			log.Printf("secret-mcp serving MCP over SSE on %s", httpAddr)
+			log.Printf("keysmith serving MCP over SSE on %s", httpAddr)
 			log.Printf("  endpoint: http://localhost%s/sse", httpAddr)
 		}
 		if err := http.ListenAndServe(httpAddr, handler); err != nil {
@@ -142,7 +142,7 @@ func runCLI(storeDir, vaultAddr string, args []string) error {
 
 	case "get":
 		if len(rest) < 1 {
-			return fmt.Errorf("get requires a key: secret-mcp get KEY [--unsafe]")
+			return fmt.Errorf("get requires a key: keysmith get KEY [--unsafe]")
 		}
 		key := rest[0]
 		unsafe := containsFlag(rest, "--unsafe")
@@ -159,7 +159,7 @@ func runCLI(storeDir, vaultAddr string, args []string) error {
 
 	case "set":
 		if len(rest) < 1 {
-			return fmt.Errorf("set requires a key: secret-mcp set KEY (value from stdin)")
+			return fmt.Errorf("set requires a key: keysmith set KEY (value from stdin)")
 		}
 		key := rest[0]
 		// Read value from stdin — never from argv (shell history / proc leak).
@@ -180,7 +180,7 @@ func runCLI(storeDir, vaultAddr string, args []string) error {
 
 	case "rotate":
 		if len(rest) < 1 {
-			return fmt.Errorf("rotate requires a key: secret-mcp rotate KEY [length]")
+			return fmt.Errorf("rotate requires a key: keysmith rotate KEY [length]")
 		}
 		key := rest[0]
 		length := 32
@@ -198,7 +198,7 @@ func runCLI(storeDir, vaultAddr string, args []string) error {
 
 	case "delete":
 		if len(rest) < 1 {
-			return fmt.Errorf("delete requires a key: secret-mcp delete KEY")
+			return fmt.Errorf("delete requires a key: keysmith delete KEY")
 		}
 		if err := st.Delete(rest[0]); err != nil {
 			return err
@@ -207,7 +207,7 @@ func runCLI(storeDir, vaultAddr string, args []string) error {
 		return nil
 
 	case "scan":
-		// secret-mcp scan [--rotate] [repo-dir]
+		// keysmith scan [--rotate] [repo-dir]
 		// Scans a git repo's history for leaked secrets. With --rotate,
 		// matching store keys are auto-rotated (self-healing).
 		repoDir := "."
@@ -227,7 +227,7 @@ func runCLI(storeDir, vaultAddr string, args []string) error {
 		return nil
 
 	case "vault-kv-get":
-		// secret-mcp vault-kv-get KEY  (masked by default, --unsafe for plaintext)
+		// keysmith vault-kv-get KEY  (masked by default, --unsafe for plaintext)
 		if len(rest) < 1 {
 			return fmt.Errorf("vault-kv-get requires a key")
 		}
@@ -247,7 +247,7 @@ func runCLI(storeDir, vaultAddr string, args []string) error {
 		return nil
 
 	case "vault-kv-set":
-		// secret-mcp vault-kv-set KEY  (value from stdin, no echo)
+		// keysmith vault-kv-set KEY  (value from stdin, no echo)
 		if len(rest) < 1 {
 			return fmt.Errorf("vault-kv-set requires a key")
 		}
@@ -285,7 +285,7 @@ func runCLI(storeDir, vaultAddr string, args []string) error {
 		return nil
 
 	case "vault-db-creds":
-		// secret-mcp vault-db-creds ROLE  — dynamic short-TTL DB credentials
+		// keysmith vault-db-creds ROLE  — dynamic short-TTL DB credentials
 		if len(rest) < 1 {
 			return fmt.Errorf("vault-db-creds requires a role")
 		}
@@ -318,20 +318,20 @@ func printUsage() {
 }
 
 func usageText() string {
-	return `secret-mcp — AI-agent-safe secret management (Go)
+	return `keysmith — AI-agent-safe secret management (Go)
 
 USAGE:
-  secret-mcp                    # MCP server mode (stdio transport)
-  secret-mcp list               # all keys, masked values
-  secret-mcp get KEY            # masked value (add --unsafe for plaintext)
-  secret-mcp set KEY            # store value read from stdin (no echo)
-  secret-mcp rotate KEY [len]   # generate + store new strong secret
-  secret-mcp delete KEY         # remove a key
-  secret-mcp scan [--rotate] [repo-dir]  # scan git history for leaked secrets
-  secret-mcp -version
+  keysmith                    # MCP server mode (stdio transport)
+  keysmith list               # all keys, masked values
+  keysmith get KEY            # masked value (add --unsafe for plaintext)
+  keysmith set KEY            # store value read from stdin (no echo)
+  keysmith rotate KEY [len]   # generate + store new strong secret
+  keysmith delete KEY         # remove a key
+  keysmith scan [--rotate] [repo-dir]  # scan git history for leaked secrets
+  keysmith -version
 
 FLAGS:
-  -store DIR   store directory (default ~/.secret-mcp or $SECRET_MCP_STORE)
+  -store DIR   store directory (default ~/.keysmith or $KEYSMITH_STORE)
 
 SECURITY:
   - set reads the value from stdin — never pass secrets as arguments
@@ -359,12 +359,16 @@ func sortStrings(s []string) {
 }
 
 func defaultStoreDir() string {
+	// KEYSMITH_STORE takes precedence; legacy SECRET_MCP_STORE still works.
+	if v := os.Getenv("KEYSMITH_STORE"); v != "" {
+		return v
+	}
 	if v := os.Getenv("SECRET_MCP_STORE"); v != "" {
 		return v
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return ".secret-mcp"
+		return ".keysmith"
 	}
-	return filepath.Join(home, ".secret-mcp")
+	return filepath.Join(home, ".keysmith")
 }

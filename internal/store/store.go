@@ -25,7 +25,7 @@ import (
 	"filippo.io/age"
 	"filippo.io/age/armor"
 
-	"github.com/sscodeai/secret-mcp/internal/mask"
+	"github.com/sscodeai/keysmith/internal/mask"
 )
 
 // Store is an age-encrypted secret KV store rooted at a directory.
