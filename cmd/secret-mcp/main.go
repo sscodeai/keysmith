@@ -42,6 +42,7 @@ var version = "0.3.0"
 func main() {
 	storeDir := flag.String("store", defaultStoreDir(), "directory holding age-encrypted secrets (key.txt + secrets.enc)")
 	httpAddr := flag.String("http", "", "serve MCP over HTTP/SSE on this address (e.g. :8080) instead of stdio")
+	streamable := flag.Bool("streamable", false, "with -http: use Streamable HTTP (MCP 2025) instead of SSE")
 	vaultAddr := flag.String("vault", "", "HashiCorp Vault address (e.g. http://127.0.0.1:8200) — use Vault as backend")
 	showVer := flag.Bool("version", false, "print version and exit")
 	flag.Parse()
@@ -55,7 +56,7 @@ func main() {
 
 	// No subcommand → MCP server mode (stdio or HTTP/SSE).
 	if len(args) == 0 {
-		runMCPServer(*storeDir, *httpAddr, *vaultAddr)
+		runMCPServer(*storeDir, *httpAddr, *vaultAddr, *streamable)
 		return
 	}
 
@@ -65,7 +66,7 @@ func main() {
 	}
 }
 
-func runMCPServer(storeDir, httpAddr, vaultAddr string) {
+func runMCPServer(storeDir, httpAddr, vaultAddr string, streamable bool) {
 	st, err := store.New(storeDir)
 	if err != nil {
 		log.Fatalf("store init: %v", err)
@@ -75,11 +76,21 @@ func runMCPServer(storeDir, httpAddr, vaultAddr string) {
 		log.Fatalf("mcp init: %v", err)
 	}
 
-	// HTTP/SSE mode: serve over HTTP (remote agents).
+	// HTTP mode: serve over HTTP (remote agents).
+	// Default = SSE transport (GET /sse + POST endpoint).
+	// With -streamable = MCP 2025 Streamable HTTP (single POST endpoint, JSON).
 	if httpAddr != "" {
-		handler := sdk.NewSSEHandler(func(*http.Request) *sdk.Server { return srv.Handler() }, nil)
-		log.Printf("secret-mcp serving MCP over SSE on %s", httpAddr)
-		log.Printf("  endpoint: http://localhost%s/sse", httpAddr)
+		var handler http.Handler
+		if streamable {
+			handler = sdk.NewStreamableHTTPHandler(func(*http.Request) *sdk.Server { return srv.Handler() },
+				&sdk.StreamableHTTPOptions{JSONResponse: true, Stateless: true})
+			log.Printf("secret-mcp serving MCP Streamable HTTP (stateless) on %s", httpAddr)
+			log.Printf("  endpoint: http://localhost%s/mcp", httpAddr)
+		} else {
+			handler = sdk.NewSSEHandler(func(*http.Request) *sdk.Server { return srv.Handler() }, nil)
+			log.Printf("secret-mcp serving MCP over SSE on %s", httpAddr)
+			log.Printf("  endpoint: http://localhost%s/sse", httpAddr)
+		}
 		if err := http.ListenAndServe(httpAddr, handler); err != nil {
 			log.Fatalf("http server: %v", err)
 		}
