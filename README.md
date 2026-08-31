@@ -1,5 +1,7 @@
 # keysmith 🔑
 
+[日本語](README.ja.md)
+
 **The key-smith for AI agents** — forge, guard, and rotate secrets so plaintext
 never enters the agent's context.
 
