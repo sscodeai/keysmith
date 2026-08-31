@@ -10,7 +10,7 @@ flowchart TB
     subgraph MCP["keysmith (Go, single binary)"]
         T[tools<br/>list/get/put/rotate/delete]
         R[resources<br/>secret://secrets masked view]
-        M[internal/mcp<br/>MCP Server (stdio)]
+        M["internal/mcp<br/>MCP Server (stdio)"]
     end
 
     subgraph Store["internal/store (age encrypted)"]
