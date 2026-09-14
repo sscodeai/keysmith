@@ -1,6 +1,6 @@
 # keysmith 🔑
 
-[English](README.md)
+[English](README.md) · [![CI](https://github.com/sscodeai/keysmith/actions/workflows/ci.yml/badge.svg)](https://github.com/sscodeai/keysmith/actions/workflows/ci.yml)
 
 **AI エージェントのための key-smith** — シークレットを生成、保護、ローテーションし、平文がエージェントのコンテキストに入らないようにします。
 

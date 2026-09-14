@@ -1,6 +1,6 @@
 # keysmith 🔑
 
-[日本語](README.ja.md)
+[日本語](README.ja.md) · [![CI](https://github.com/sscodeai/keysmith/actions/workflows/ci.yml/badge.svg)](https://github.com/sscodeai/keysmith/actions/workflows/ci.yml)
 
 **The key-smith for AI agents** — forge, guard, and rotate secrets so plaintext
 never enters the agent's context.
