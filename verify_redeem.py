@@ -45,12 +45,18 @@ def ks(args, **kw):
     return subprocess.run([BIN, "-store", STORE] + args, capture_output=True, text=True, **kw)
 
 
-def issue(name, ttl=None):
-    args = ["token", name] + (["--ttl", ttl] if ttl else [])
+def issue(name, ttl=None, extra=None):
+    tok, _ = issue_info(name, ttl, extra)
+    return tok
+
+
+def issue_info(name, ttl=None, extra=None):
+    """Issue a token; returns (token, stderr) so binding notices can be asserted."""
+    args = ["token", name] + (["--ttl", ttl] if ttl else []) + (extra or [])
     r = ks(args)
     if r.returncode != 0:
         raise SystemExit("token issue failed for %s: %s" % (name, r.stderr.strip()))
-    return r.stdout.strip()
+    return r.stdout.strip(), r.stderr.strip()
 
 
 def run_cmd(args, env=None):
@@ -66,6 +72,8 @@ def main():
     subprocess.run([BIN, "-store", STORE, "set", "DEMO_KEY"], input=CANARY,
                    capture_output=True, text=True)
     subprocess.run([BIN, "-store", STORE, "set", "DEMO_URL"], input=PLAIN,
+                   capture_output=True, text=True)
+    subprocess.run([BIN, "-store", STORE, "set", "BOUND_KEY"], input=PLAIN,
                    capture_output=True, text=True)
 
     print("\n[1] token issuance")
@@ -177,6 +185,52 @@ def main():
     check("audit log is 0600", oct(os.stat(audit).st_mode & 0o777) == "0o600")
     rec = json.loads(body.strip().splitlines()[-1])
     check("audit record has no value field", not any("value" in k or "secret" in k for k in rec))
+
+    print("\n[6] target binding")
+    bound_tok, bound_stderr = issue_info(
+        "BOUND_KEY", extra=["--allow-host=api.example.test", "--allow-path=/v1/"])
+    check("issue reports the binding", "api.example.test" in bound_stderr, bound_stderr)
+
+    def run_targeted(target, token, p):
+        if os.path.exists(p):
+            os.remove(p)
+        args = (["--target", target] if target else []) + \
+               ["--env", "AUTH=Bearer " + token, "--", "sh", "-c", "touch " + p]
+        r = run_cmd(args)
+        return r, os.path.exists(p)
+
+    r, ran = run_targeted("https://api.example.test/v1/me", bound_tok, marker)
+    check("matching target runs the command", ran and r.returncode == 0, r.stderr.strip()[:90])
+    check("run reports the satisfied binding", "binding satisfied" in r.stderr, r.stderr.strip()[:90])
+
+    for label, target in [
+        ("wrong host refused", "https://evil.example.test/v1/me"),
+        ("other path refused", "https://api.example.test/v2/me"),
+        ("plain http to a remote host refused", "http://api.example.test/v1/me"),
+    ]:
+        r, ran = run_targeted(target, bound_tok, marker)
+        check("%s (no child started)" % label,
+              r.returncode != 0 and not ran and CANARY not in (r.stderr + r.stdout),
+              "rc=%d %s" % (r.returncode, r.stderr.strip()[:80]))
+
+    r, ran = run_targeted(None, bound_tok, marker)
+    check("bound token without --target refused (no child started)",
+          r.returncode != 0 and not ran, r.stderr.strip()[:90])
+    check("refusal says how to declare a target", "--target" in r.stderr, r.stderr.strip()[:90])
+
+    free_tok, free_stderr = issue_info("DEMO_KEY")
+    r, ran = run_targeted("http://127.0.0.1:9/v1/x", free_tok, marker)
+    check("unbound token still runs, loopback http allowed", ran, r.stderr.strip()[:90])
+    check("unbound token warns about the missing binding",
+          "no target binding" in r.stderr and "DEMO_KEY" in r.stderr, r.stderr.strip()[:120])
+    check("issue warns when no --allow-host was given", "any host" in free_stderr, free_stderr)
+
+    body = open(audit).read().strip().splitlines()
+    records = [json.loads(l) for l in body]
+    check("audit records the declared target",
+          any(r.get("target") == "api.example.test/v1/me" for r in records),
+          json.dumps(records[-2:]))
+    check("audit holds no value", CANARY not in "\n".join(body))
 
     print("\n%s" % ("=" * 62))
     if FAILURES:

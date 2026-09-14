@@ -41,7 +41,7 @@ import (
 	"github.com/sscodeai/keysmith/internal/vault"
 )
 
-var version = "0.4.0"
+var version = "0.5.0"
 
 func main() {
 	storeDir := flag.String("store", defaultStoreDir(), "directory holding age-encrypted secrets (key.txt + secrets.enc)")
@@ -309,12 +309,13 @@ func runCLI(storeDir, vaultAddr string, args []string) error {
 		return nil
 
 	case "token":
-		// keysmith token NAME [--ttl 1h]
+		// keysmith token NAME [--ttl 1h] [--allow-host H] [--allow-path P] [--allow-header HN]
 		// Issue a session-bound placeholder for NAME. The token is a reference,
 		// not a secret: it only resolves locally, only in this session, and only
-		// for the names issued here.
+		// for the names issued here. The --allow-* flags record a target binding
+		// that `keysmith run --target` enforces.
 		if len(rest) < 1 {
-			return fmt.Errorf("token requires a key name: keysmith token NAME [--ttl 1h]")
+			return fmt.Errorf("token requires a key name: keysmith token NAME [--ttl 1h] [--allow-host H] [--allow-path P] [--allow-header HN]")
 		}
 		name := rest[0]
 		ttl := redeem.DefaultTTL
@@ -325,17 +326,29 @@ func runCLI(storeDir, vaultAddr string, args []string) error {
 			}
 			ttl = d
 		}
+		binding := redeem.Binding{
+			Hosts:        flagValues(rest, "--allow-host"),
+			PathPrefixes: flagValues(rest, "--allow-path"),
+			Headers:      flagValues(rest, "--allow-header"),
+		}
+		if err := validateBinding(binding); err != nil {
+			return err
+		}
 		// Fail closed: never issue a token for a name this store cannot resolve.
 		if _, err := st.Get(name); err != nil {
 			return fmt.Errorf("cannot issue a token for %q: %w", name, err)
 		}
-		sess, err := redeem.NewSessions(storeDir).Issue(name, ttl)
+		sess, err := redeem.NewSessions(storeDir).IssueBound(name, ttl, binding)
 		if err != nil {
 			return err
 		}
-		fmt.Fprintf(os.Stderr, "keysmith: session %s (names: %s), expires at %s\n",
-			sess.ID[:8], strings.Join(sess.Names, ","),
+		fmt.Fprintf(os.Stderr, "keysmith: session %s (names: %s), binding: %s, expires at %s\n",
+			sess.ID[:8], strings.Join(sess.Names, ","), binding.String(),
 			sess.ExpiresAt.Local().Format(time.RFC3339))
+		if binding.IsZero() {
+			fmt.Fprintf(os.Stderr, "keysmith: warning: no --allow-host given — this token can be redeemed "+
+				"into a command aimed at any host\n")
+		}
 		fmt.Println(sess.Token(name))
 		return nil
 
@@ -367,8 +380,9 @@ USAGE:
   keysmith rotate KEY [len]   # generate + store new strong secret
   keysmith delete KEY         # remove a key
   keysmith scan [--rotate] [repo-dir]  # scan git history for leaked secrets
-  keysmith token NAME [--ttl 1h]       # issue a session-bound placeholder token
-  keysmith run [--session SID] --env KEY='<template>' -- cmd args...
+  keysmith token NAME [--ttl 1h] [--allow-host H] [--allow-path P] [--allow-header HN]
+                                       # issue a session-bound placeholder token
+  keysmith run [--session SID] [--target URL] --env KEY='<template>' -- cmd args...
                                        # redeem tokens locally, then run cmd
   keysmith -version
 
@@ -382,6 +396,8 @@ SECURITY:
   - run keeps values out of argv, out of the transcript, and out of any
     model request: tokens are redeemed locally, into the child's environment
   - redemption fails closed: any error aborts the command, with no fallback
+  - --allow-host/--allow-path/--allow-header bind a token to a destination;
+    run --target must match, or the command is not started
   - secrets are stored age-encrypted at rest (key.txt 0600, secrets.enc armor)
 `
 }
@@ -408,15 +424,56 @@ func flagValue(args []string, name string) (string, bool) {
 	return "", false
 }
 
-const runUsage = `usage: keysmith run [--session SID] --env KEY='<template>' [--env ...] -- <command> [args...]
+// flagValues returns every value given for a repeatable flag.
+func flagValues(args []string, name string) []string {
+	var out []string
+	for i, a := range args {
+		switch {
+		case a == name && i+1 < len(args):
+			out = append(out, args[i+1])
+		case strings.HasPrefix(a, name+"="):
+			out = append(out, strings.TrimPrefix(a, name+"="))
+		}
+	}
+	return out
+}
+
+// validateBinding rejects a malformed binding before it is stored, so the
+// enforcement path never has to guess what a user meant.
+func validateBinding(b redeem.Binding) error {
+	for _, h := range b.Hosts {
+		if h = strings.TrimSpace(h); h == "" || strings.ContainsAny(h, "/:@") {
+			return fmt.Errorf("--allow-host %q must be a bare host name or a .domain suffix", h)
+		}
+	}
+	for _, p := range b.PathPrefixes {
+		if !strings.HasPrefix(p, "/") {
+			return fmt.Errorf("--allow-path %q must start with /", p)
+		}
+	}
+	for _, h := range b.Headers {
+		if strings.TrimSpace(h) == "" || strings.ContainsAny(h, ": 	") {
+			return fmt.Errorf("--allow-header %q must be a bare header name", h)
+		}
+	}
+	return nil
+}
+
+const runUsage = `usage: keysmith run [--session SID] [--target URL] --env KEY='<template>' [--env ...] -- <command> [args...]
 
   Each --env value is a template. A [[keysmith:v1:NAME:sid]] token inside it is
   replaced with the real value before the command starts, and the result is put
   into the child's environment under KEY. The value never appears in the command
   arguments, in this process's argv, or in any model request.
 
-  Issue tokens first:  TOKEN=$(keysmith token DB_PASSWORD)
-  Then:                keysmith run --env AUTH="Bearer $TOKEN" -- sh -c 'curl -H "Authorization: $AUTH" https://example.test'`
+  --target declares where the command sends the value (host and path, no query
+  string). Tokens issued with --allow-host/--allow-path/--allow-header are only
+  redeemable when the declared target and the command satisfy their binding.
+  Tokens without a binding are redeemed anywhere, and warned about on stderr.
+
+  Issue tokens first:  TOKEN=$(keysmith token DB_PASSWORD --allow-host api.example.test --allow-path /v1/)
+  Then:                keysmith run --target https://api.example.test/v1/me \
+                         --env AUTH="Bearer $TOKEN" -- sh -c 'curl -H "Authorization: $AUTH" https://api.example.test/v1/me'`
 
 // runRedeemed implements `keysmith run`: resolve tokens inside --env templates
 // locally, then exec the command with the values in its environment.
@@ -434,6 +491,7 @@ const runUsage = `usage: keysmith run [--session SID] --env KEY='<template>' [--
 type runOptions struct {
 	Envs    []string // KEY=<template>
 	Session string
+	Target  string // --target: the declared destination for bound tokens
 	Command []string
 }
 
@@ -459,6 +517,12 @@ parse:
 			i += 2
 		case strings.HasPrefix(a, "--session="):
 			opts.Session = strings.TrimPrefix(a, "--session=")
+			i++
+		case a == "--target" && i+1 < len(rest):
+			opts.Target = rest[i+1]
+			i += 2
+		case strings.HasPrefix(a, "--target="):
+			opts.Target = strings.TrimPrefix(a, "--target=")
 			i++
 		default:
 			return runOptions{}, fmt.Errorf("run: unexpected argument %q (options must come before --)\n\n%s", a, runUsage)
@@ -552,6 +616,27 @@ func runRedeemed(storeDir string, st *store.Store, rest []string) error {
 	}
 
 	if len(redeemed) > 0 {
+		// Target binding, enforced before the audit record and before the child
+		// exists: a bound token may only be redeemed into a command aimed at a
+		// destination its binding allows. Unbound names are still reported.
+		var tgt *redeem.Target
+		if opts.Target != "" {
+			tgt, err = redeem.ParseTarget(opts.Target)
+			if err != nil {
+				return fmt.Errorf("run: %w", err)
+			}
+		}
+		surface := strings.Join(templates, "\n") + "\n" + strings.Join(cmdArgs, " ")
+		bound, berr := redeem.CheckRedemption(sess, redeemed, tgt, surface)
+		if berr != nil {
+			return fmt.Errorf("run: %w", berr)
+		}
+		if unbound := redeem.UnboundNames(sess, redeemed); len(unbound) > 0 {
+			fmt.Fprintf(os.Stderr, "keysmith: warning: %s issued with no target binding — "+
+				"the value can be redeemed into a command aimed anywhere (see `keysmith token --allow-host`)\n",
+				strings.Join(unbound, ","))
+		}
+
 		// Audited before the child starts, and the audit is part of the
 		// fail-closed path: no record, no execution.
 		rec := redeem.AuditRecord{
@@ -561,11 +646,18 @@ func runRedeemed(storeDir string, st *store.Store, rest []string) error {
 			Argc:    len(cmdArgs) - 1,
 			PID:     os.Getpid(),
 		}
+		if tgt != nil {
+			rec.Target = tgt.Host + tgt.Path
+		}
 		if err := redeem.AppendAudit(storeDir, rec); err != nil {
 			return fmt.Errorf("run: cannot write the redemption audit log: %w", err)
 		}
 		fmt.Fprintf(os.Stderr, "keysmith: redeemed %s for %s\n",
 			strings.Join(rec.Keys, ","), rec.Command)
+		if len(bound) > 0 {
+			fmt.Fprintf(os.Stderr, "keysmith: target binding satisfied for %s (%s)\n",
+				strings.Join(bound, ","), rec.Target)
+		}
 	}
 
 	child := exec.Command(cmdArgs[0], cmdArgs[1:]...)

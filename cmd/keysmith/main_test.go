@@ -9,7 +9,8 @@ const token = "[[keysmith:v1:DEMO_KEY:8f3a2b1c]]"
 
 func TestParseRunArgsSplitsOptionsAndCommand(t *testing.T) {
 	opts, err := parseRunArgs(
-		[]string{"--session", "8f3a2b1c", "--env", "AUTH=Bearer " + token, "--env=EXTRA=plain", "--", "curl", "-s", "https://example.test"},
+		[]string{"--session", "8f3a2b1c", "--target", "https://api.example.test/v1/me",
+			"--env", "AUTH=Bearer " + token, "--env=EXTRA=plain", "--", "curl", "-s", "https://example.test"},
 		"")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -17,12 +18,30 @@ func TestParseRunArgsSplitsOptionsAndCommand(t *testing.T) {
 	if opts.Session != "8f3a2b1c" {
 		t.Fatalf("session not parsed: %q", opts.Session)
 	}
+	if opts.Target != "https://api.example.test/v1/me" {
+		t.Fatalf("target not parsed: %q", opts.Target)
+	}
 	if len(opts.Envs) != 2 || opts.Envs[0] != "AUTH=Bearer "+token || opts.Envs[1] != "EXTRA=plain" {
 		t.Fatalf("envs not parsed: %v", opts.Envs)
 	}
 	want := []string{"curl", "-s", "https://example.test"}
 	if len(opts.Command) != len(want) || opts.Command[0] != want[0] || opts.Command[2] != want[2] {
 		t.Fatalf("command not parsed: %v", opts.Command)
+	}
+}
+
+func TestParseRunArgsTargetForms(t *testing.T) {
+	for _, args := range [][]string{
+		{"--target", "https://a.test/x", "--env", "A=1", "--", "true"},
+		{"--target=https://a.test/x", "--env", "A=1", "--", "true"},
+	} {
+		opts, err := parseRunArgs(args, "")
+		if err != nil {
+			t.Fatalf("%v: unexpected error %v", args, err)
+		}
+		if opts.Target != "https://a.test/x" {
+			t.Fatalf("%v: target not parsed: %q", args, opts.Target)
+		}
 	}
 }
 
