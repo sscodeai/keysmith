@@ -11,6 +11,8 @@ agents that develop it.
   on masked forms, not raw `Get()`.
 - `e2e_test.py` intentionally asserts plaintext does NOT appear in MCP
   output. Keep it that way.
+- `verify_redeem.py` asserts on hashes, `/proc/<pid>/environ` and
+  `/proc/<pid>/cmdline` — never print a value to check one. Keep it that way.
 - If you must inspect an on-disk blob, read it as bytes and check only for
   the armor markers / absence of plaintext — never dump the decrypted data.
 
@@ -22,11 +24,21 @@ agents that develop it.
 4. `put` must accept a `value_file` path, read it, and delete it after.
 5. Masking rules live in `internal/mask` — keep the entropy/prefix/URL
    segmentation tests green.
+6. **Redemption fails closed** (`internal/redeem`, docs/THREAT-MODEL.md). On any
+   error — unknown session, expired session, name not issued in that session,
+   missing or empty value, malformed reserved prefix, token in `argv`, audit
+   write failure — the command is NOT started. There is no fallback that
+   forwards the literal token and none that forwards the plaintext, and no
+   error message may contain a value.
+7. Redemption never puts a value in `argv`, and never logs a value or a full
+   argument list (`<store>/audit.log` records key names only).
 
 ## Workflow
 - Run `go test ./...` before committing — all packages must pass.
 - Run `go vet ./...` — no warnings.
 - Run `python3 e2e_test.py` after any change to `internal/mcp` or
   `internal/store` — the protocol round-trip must stay green.
+- Run `python3 verify_redeem.py` after any change to `internal/redeem` or to
+  the `token`/`run` commands — the fail-closed end-to-end checks must stay green.
 - Keep the Go SDK (github.com/modelcontextprotocol/go-sdk) on a version
   with no open OSV advisories; bump deliberately.

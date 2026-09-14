@@ -1,15 +1,21 @@
 ---
 name: keysmith
-description: "Route ALL secret operations through the keysmith MCP server — never read .env/secret files directly. Values stay masked; plaintext never enters context."
-version: 1.0.0
+description: "Route ALL secret operations through the keysmith MCP server — never read .env/secret files directly. Values stay masked; plaintext never enters context; use `keysmith run` to use a value without reading it."
+version: 1.1.0
 ---
 
 # keysmith — Agent-safe Secret Handling
 
 ## When to use
-Any time the agent needs to read, write, list, or rotate a credential
+Any time the agent needs to read, write, list, rotate, or **use** a credential
 (API key, token, password, DSN, .env value) — either in this codebase or
 in a project where the keysmith server is configured.
+
+## Scope (read this first)
+These rules are guidance for a cooperative agent. They are not an access-control
+boundary: nothing here stops you from reading a file that was never in the store.
+The enforced paths are the store API, the masked views, and `keysmith run`.
+Prefer them because they work, not because they are enforced.
 
 ## Hard rules (non-negotiable)
 1. **NEVER `cat` a `.env` file, `secrets.enc`, or any secret-bearing file.**
@@ -29,6 +35,25 @@ in a project where the keysmith server is configured.
 - **`rotate <key> [length]`** — generate a new strong random value and store
   it. Returns masked.
 - **`delete <key>`** — remove.
+
+## Using a credential without reading it (preferred)
+Never ask for plaintext just to make a call. Issue a token and let keysmith
+substitute the real value locally, into the child's environment:
+
+```sh
+TOKEN=$(keysmith token API_KEY)
+keysmith run --env AUTH="Bearer $TOKEN" -- sh -c 'curl -s -H "Authorization: $AUTH" https://api.example.test/me'
+```
+
+- A token looks like `[[keysmith:v1:API_KEY:8f3a2b1c]]`. It is a reference, not
+  a secret, and it only resolves on this machine, in this session.
+- A token in the command arguments (`argv`) is refused on purpose: `argv` is
+  readable by every user through `ps`. Put it in `--env` and let the child's
+  shell expand `$AUTH` inside the child.
+- Redemption fails closed. If it refuses, do **not** retry with `--unsafe` —
+  fix the cause: issue a fresh token (`keysmith token NAME`), check the name is
+  in the session, or check the session has not expired (default TTL 1h).
+- The command's exit code is propagated, so `run` is script-safe.
 
 ## Pitfalls
 - Passing the plaintext value as the `put` argument defeats the design —

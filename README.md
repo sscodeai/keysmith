@@ -10,6 +10,13 @@ masking as the last line of defense and works structurally to keep secrets
 from leaking: encrypted residency, masked views, handle-passing, self-healing
 rotation, and short-TTL dynamic credentials.
 
+Masking alone leaves a gap: a masked value cannot be *used*. The redemption
+layer closes it — the agent handles a non-secret token, and keysmith substitutes
+the real value on this machine, into the environment of a command it starts.
+The value is never in a model request, a tool result, a transcript, or an
+argument list. See [docs/REDEEM.md](docs/REDEEM.md) and
+[docs/THREAT-MODEL.md](docs/THREAT-MODEL.md).
+
 Built with Go. Single static binary, zero runtime dependencies.
 
 ## Why
@@ -27,6 +34,7 @@ Keysmith fixes this with a **layered security model**:
 | Handle-passing | `put` reads value from a temp file arg, not the transcript | Plaintext in tool-call transcripts |
 | Self-healing rotation | `scan --rotate` detects leaks, kills the leaked value | Stale leaked credentials keep working |
 | Short-TTL (Vault) | dynamic DB creds expire in 1h | Leaked credentials become worthless |
+| Redemption | `keysmith run` substitutes a token locally, into the child's environment | An agent that must *use* a credential being tempted to print it; plaintext in `argv`, transcripts, or logs |
 
 ## Install
 
@@ -95,9 +103,37 @@ keysmith get API_KEY                 # masked value
 keysmith get API_KEY --unsafe        # plaintext (last resort)
 keysmith set API_KEY < value.txt     # value from stdin, no shell-history leak
 keysmith rotate API_KEY 32           # generate + store new strong secret
-keysmith delete API_KEY              # remove a key
+keysmith delete API_KEY               # remove a key
 keysmith scan [--rotate] [repo-dir]  # scan git history for leaked secrets
+keysmith token API_KEY               # issue a session-bound placeholder token
+keysmith run --env AUTH="Bearer <token>" -- sh -c 'curl -H "Authorization: $AUTH" https://…'
 ```
+
+## Use a credential without reading it
+
+The agent never needs the plaintext to *use* a credential:
+
+```sh
+TOKEN=$(keysmith token API_KEY)                 # token on stdout, session info on stderr
+keysmith run --env AUTH="Bearer $TOKEN" -- sh -c 'curl -s -H "Authorization: $AUTH" https://api.example.test/me'
+```
+
+- `TOKEN` is a reference, not a secret: `[[keysmith:v1:API_KEY:8f3a2b1c]]`. It only
+  resolves locally, only while the issuing session is alive, and only for the
+  names issued in it.
+- The real value is substituted on this machine and placed in the child's
+  environment. It never enters a model request, a transcript, or `argv`.
+- A token in the command arguments is refused, because `argv` is readable by
+  every user via `ps`. Put it in `--env` and let the child's shell expand it.
+- Redemption fails closed: unknown or expired session, a name not issued in that
+  session, a missing value, a malformed token, or an unwritable audit log all
+  abort before the command starts. No fallback ever forwards a literal token or
+  a plaintext value.
+- `<store>/audit.log` records the key *names*, the command basename and the
+  argument count — never a value and never a full argument list.
+
+Full details, including the token grammar and the fail-closed table:
+[docs/REDEEM.md](docs/REDEEM.md).
 
 Vault-backed commands (with `-vault`):
 
@@ -143,6 +179,7 @@ flowchart TB
         MASK[masking rules<br/>internal/mask]
         SCAN[leak-scan + self-healing<br/>keysmith scan --rotate]
         VAULT[Vault short-TTL creds<br/>internal/vault]
+        REDEEM[local redemption<br/>internal/redeem]
     end
 
     subgraph Auto["Automation"]
@@ -165,7 +202,7 @@ flowchart TB
 
 | Layer | Capability | Relationship |
 |---|---|---|
-| Core | age store + mask + rotate + scan | foundational primitives |
+| Core | age store + mask + rotate + scan + redeem | foundational primitives |
 | Automation | `scripts/scan-cron.sh` | schedules `scan --rotate` |
 | Access | stdio / SSE / Streamable | three transports, one server |
 
@@ -180,6 +217,10 @@ itself, transports decide how agents connect.
   (`sk******ij`) so credentials are distinguishable without being revealed.
 - **In transcripts**: `put` never takes the plaintext as an argument — it
   reads a temp file path and deletes the file after.
+- **At use time**: `keysmith run` redeems a session-bound token locally and
+  places the value in the child's environment. Values never reach `argv`, the
+  audit log, or a model request; every failure aborts before the command starts
+  (no plaintext fallback, no literal-token fallback).
 - **Masking rules**: key-name markers (SECRET/TOKEN/PASSWORD/API_KEY/DSN...),
   known value prefixes (sk-, ghp_, glpat-, xoxb-, JWT...), and high-entropy
   alphanumeric runs (≥20 chars mixing letters+digits, Shannon entropy ≥3.5).
@@ -190,10 +231,30 @@ itself, transports decide how agents connect.
 ## Development
 
 ```sh
-go test ./...        # unit tests (mask + store + vault + leakscan)
-go vet ./...         # static checks
-python3 e2e_test.py  # full MCP protocol round-trip
+go test ./...            # unit tests (mask + store + vault + leakscan + redeem)
+go vet ./...             # static checks
+python3 e2e_test.py      # full MCP protocol round-trip
+python3 verify_redeem.py # redemption: child env vs /proc, fail-closed cases, audit log
 ```
+
+## Boundaries
+
+keysmith narrows the paths a credential can take; it does not make an untrusted
+machine safe. Specifically:
+
+- Any process running as your user can read `key.txt` and decrypt the store.
+  `0600`/`0700` permissions do not isolate same-UID processes.
+- The bundled agent skill is **guidance, not access control**: nothing stops an
+  agent from `cat`-ing a file that was never in the store. The enforced paths are
+  the store API, the masked views, and the redemption layer.
+- Masking discloses the first and last two characters of a value
+  (`sk******ij`) so credentials stay distinguishable — a deliberate, small
+  disclosure.
+- Masked views and the leak-scanner are best-effort detection, not proof: a
+  value that is never matched is never masked.
+
+The full adversary list, including what is explicitly out of scope, is in
+[docs/THREAT-MODEL.md](docs/THREAT-MODEL.md).
 
 ## Scheduled leak-scan (cron self-healing)
 

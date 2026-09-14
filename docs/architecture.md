@@ -42,7 +42,8 @@ flowchart TB
 
 | Layer | Component | Responsibility |
 |---|---|---|
-| Agent layer | LLM + SKILL.md | behavior rules: no raw reads, handle passing |
+| Agent layer | LLM + SKILL.md | behavior rules: no raw reads, handle passing, redeem tokens instead of asking for plaintext |
 | MCP layer | internal/mcp | protocol server: tools + resources |
 | Storage layer | internal/store | age encrypted residency, atomic writes, 0600 |
 | Masking layer | internal/mask | prefix/entropy/URL-segment masking rules |
+| Redemption layer | internal/redeem | session-bound tokens resolved locally into a child's environment; fail-closed; value-free audit log |
