@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """End-to-end verification of the redemption layer (`keysmith token` / `keysmith run`).
 
-Proves, from the outside, with real processes and /proc:
+Proves, from the outside, with real processes (and /proc on Linux):
 
   1. the child process receives the REAL value (it is in the child's environment)
   2. the value is NOT in the child's argv, and not in the wrapper's argv
@@ -23,6 +23,7 @@ import time
 
 BIN = os.environ.get("KEYSMITH_BIN", "/tmp/ks")
 STORE = os.environ.get("KEYSMITH_REDEEM_STORE", "/tmp/ks-redeem-store")
+IS_LINUX = sys.platform.startswith("linux")
 CANARY = "sk-synthetic-REDEEM-CANARY-0002"   # synthetic fixture, not a credential
 PLAIN = "plain-value-9x"
 
@@ -93,6 +94,8 @@ def main():
     if not os.path.exists(pidfile):
         print("  FAIL child never started")
         FAILURES.append("child start")
+    elif not IS_LINUX:
+        print("  SKIP child env/argv evidence — this check reads /proc (Linux only); this host is %s" % sys.platform)
     else:
         cpid = open(pidfile).read().strip()
         cmdline = open("/proc/%s/cmdline" % cpid, "rb").read().decode(errors="replace")
