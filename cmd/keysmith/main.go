@@ -426,10 +426,21 @@ const runUsage = `usage: keysmith run [--session SID] --env KEY='<template>' [--
 //     user on the box through ps, so values must travel in the environment
 //   - any resolution failure, and any failure to write the audit record,
 //     aborts before the child process starts
-func runRedeemed(storeDir string, st *store.Store, rest []string) error {
-	var templates []string
-	sid := os.Getenv("KEYSMITH_SESSION")
+//
+// Argument handling is split into pure helpers (parseRunArgs,
+// checkNoTokensInCommand, parseEnvTemplate) so it can be unit tested.
 
+// runOptions is the parsed form of `keysmith run` arguments.
+type runOptions struct {
+	Envs    []string // KEY=<template>
+	Session string
+	Command []string
+}
+
+// parseRunArgs splits `run` arguments into options and the command after --.
+// Pure, so the fail-closed argument handling can be unit tested.
+func parseRunArgs(rest []string, sessionEnv string) (runOptions, error) {
+	opts := runOptions{Session: sessionEnv}
 	i := 0
 parse:
 	for i < len(rest) {
@@ -438,22 +449,58 @@ parse:
 			i++
 			break parse
 		case a == "--env" && i+1 < len(rest):
-			templates = append(templates, rest[i+1])
+			opts.Envs = append(opts.Envs, rest[i+1])
 			i += 2
 		case strings.HasPrefix(a, "--env="):
-			templates = append(templates, strings.TrimPrefix(a, "--env="))
+			opts.Envs = append(opts.Envs, strings.TrimPrefix(a, "--env="))
 			i++
 		case a == "--session" && i+1 < len(rest):
-			sid = rest[i+1]
+			opts.Session = rest[i+1]
 			i += 2
 		case strings.HasPrefix(a, "--session="):
-			sid = strings.TrimPrefix(a, "--session=")
+			opts.Session = strings.TrimPrefix(a, "--session=")
 			i++
 		default:
-			return fmt.Errorf("run: unexpected argument %q (options must come before --)\n\n%s", a, runUsage)
+			return runOptions{}, fmt.Errorf("run: unexpected argument %q (options must come before --)\n\n%s", a, runUsage)
 		}
 	}
-	cmdArgs := rest[i:]
+	opts.Command = rest[i:]
+	return opts, nil
+}
+
+// checkNoTokensInCommand refuses a token carried in the command arguments:
+// argv is readable by every user on the machine through ps.
+func checkNoTokensInCommand(cmd []string) error {
+	for _, a := range cmd {
+		if redeem.HasToken(a) {
+			return errors.New("run: refusing a keysmith token in the command arguments — argv is readable by every user via ps\n" +
+				"carry it in the environment instead, for example:\n" +
+				"  keysmith run --env AUTH='Bearer [[keysmith:v1:NAME:sid]]' -- sh -c 'curl -H \"Authorization: $AUTH\" https://example.test'")
+		}
+	}
+	return nil
+}
+
+// parseEnvTemplate splits an --env value of the form KEY=<template>.
+func parseEnvTemplate(tpl string) (key, template string, err error) {
+	eq := strings.Index(tpl, "=")
+	if eq <= 0 {
+		return "", "", fmt.Errorf("run: --env expects KEY=<template>, got %q", tpl)
+	}
+	if !validEnvName(tpl[:eq]) {
+		return "", "", fmt.Errorf("run: --env name %q is not a valid environment variable name", tpl[:eq])
+	}
+	return tpl[:eq], tpl[eq+1:], nil
+}
+
+// runRedeemed resolves tokens inside the --env templates and then starts the
+// command with the values in its environment (see the fail-closed notes above).
+func runRedeemed(storeDir string, st *store.Store, rest []string) error {
+	opts, err := parseRunArgs(rest, os.Getenv("KEYSMITH_SESSION"))
+	if err != nil {
+		return err
+	}
+	cmdArgs, templates, sid := opts.Command, opts.Envs, opts.Session
 
 	if len(cmdArgs) == 0 {
 		return fmt.Errorf("run: no command given\n\n%s", runUsage)
@@ -461,12 +508,8 @@ parse:
 	if len(templates) == 0 {
 		return fmt.Errorf("run: at least one --env KEY=<template> is required\n\n%s", runUsage)
 	}
-	for _, a := range cmdArgs {
-		if redeem.HasToken(a) {
-			return errors.New("run: refusing a keysmith token in the command arguments — argv is readable by every user via ps\n" +
-				"carry it in the environment instead, for example:\n" +
-				"  keysmith run --env AUTH='Bearer [[keysmith:v1:NAME:sid]]' -- sh -c 'curl -H \"Authorization: $AUTH\" https://example.test'")
-		}
+	if err := checkNoTokensInCommand(cmdArgs); err != nil {
+		return err
 	}
 
 	needsSession := false
@@ -495,15 +538,11 @@ parse:
 	childEnv := make([]string, 0, len(templates))
 	var redeemed []string
 	for _, tpl := range templates {
-		eq := strings.Index(tpl, "=")
-		if eq <= 0 {
-			return fmt.Errorf("run: --env expects KEY=<template>, got %q", tpl)
+		key, template, err := parseEnvTemplate(tpl)
+		if err != nil {
+			return err
 		}
-		key := tpl[:eq]
-		if !validEnvName(key) {
-			return fmt.Errorf("run: --env name %q is not a valid environment variable name", key)
-		}
-		value, names, err := resolver.Resolve(tpl[eq+1:])
+		value, names, err := resolver.Resolve(template)
 		if err != nil {
 			// Fail closed: nothing is exported, nothing is executed.
 			return fmt.Errorf("run: %w", err)
@@ -531,7 +570,7 @@ parse:
 
 	child := exec.Command(cmdArgs[0], cmdArgs[1:]...)
 	child.Stdin, child.Stdout, child.Stderr = os.Stdin, os.Stdout, os.Stderr
-	child.Env = append(envWithout(os.Environ(), "KEYSMITH_SESSION"), childEnv...)
+	child.Env = mergeEnv(envWithout(os.Environ(), "KEYSMITH_SESSION"), childEnv)
 
 	if err := child.Run(); err != nil {
 		var exitErr *exec.ExitError
@@ -554,6 +593,26 @@ func envWithout(env []string, name string) []string {
 		out = append(out, e)
 	}
 	return out
+}
+
+// mergeEnv returns base without any entry whose name is set by overrides,
+// followed by the overrides. execve receives the slice unchanged, so keeping a
+// duplicate entry would leave the stale parent value in the child's environ.
+func mergeEnv(base, overrides []string) []string {
+	replaced := make(map[string]bool, len(overrides))
+	for _, o := range overrides {
+		if i := strings.Index(o, "="); i > 0 {
+			replaced[o[:i]] = true
+		}
+	}
+	out := make([]string, 0, len(base)+len(overrides))
+	for _, e := range base {
+		if i := strings.Index(e, "="); i > 0 && replaced[e[:i]] {
+			continue
+		}
+		out = append(out, e)
+	}
+	return append(out, overrides...)
 }
 
 func validEnvName(s string) bool {
