@@ -8,17 +8,17 @@ func TestKeyNameIsSensitive(t *testing.T) {
 		want bool
 	}{
 		{"API_SECRET", true},
-		{"DATABASE_URL", false},          // URL is plain-config last word
+		{"DATABASE_URL", false}, // URL is plain-config last word
 		{"GITHUB_TOKEN", true},
 		{"AUTH_TOKEN", true},
 		{"DB_PASSWORD", true},
 		{"AWS_ACCESS_KEY_ID", true},
 		{"PORT", false},
 		{"DEBUG", false},
-		{"BETTER_AUTH_URL", false},       // URL last word overrides AUTH
+		{"BETTER_AUTH_URL", false}, // URL last word overrides AUTH
 		{"SIGNING_SECRET", true},
-		{"NEO4J_URL", false},             // URL last word
-		{"MY_CREDENTIAL_FILE", true},     // CREDENTIAL anywhere
+		{"NEO4J_URL", false},         // URL last word
+		{"MY_CREDENTIAL_FILE", true}, // CREDENTIAL anywhere
 	}
 	for _, c := range cases {
 		if got := KeyNameIsSensitive(c.key); got != c.want {
@@ -32,18 +32,18 @@ func TestValueLooksSecret(t *testing.T) {
 		val  string
 		want bool
 	}{
-		{"sk-1234567890abcdef", true},        // sk- prefix
-		{"ghp_1234567890abcdefghij", true},   // GitHub PAT
-		{"glpat-abcdef1234567890", true},     // GitLab PAT
-		{"xoxb-1234567890-abcdef", true},     // Slack
+		{"sk-1234567890abcdef", true},                  // sk- prefix
+		{"ghp_1234567890abcdefghij", true},             // GitHub PAT
+		{"glpat-abcdef1234567890", true},               // GitLab PAT
+		{"xoxb-1234567890-abcdef", true},               // Slack
 		{"eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0", true}, // JWT
-		{"AKIAIOSFODNN7EXAMPLE", true},       // AWS access key
-		{"604800", false},                    // pure numeric (timeout)
-		{"hello", false},                     // short, not secret
-		{"myapp-demo-snapshot", false},       // structured, segments short
-		{"oss-cn-beijing.aliyuncs.com", false}, // hostname
-		{"abcdefghijklmnopqrstuvwxyz", false},  // all letters, entropy low
-		{"a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6", true}, // mixed 36 chars
+		{"AKIAIOSFODNN7EXAMPLE", true},                 // AWS access key
+		{"604800", false},                              // pure numeric (timeout)
+		{"hello", false},                               // short, not secret
+		{"myapp-demo-snapshot", false},                 // structured, segments short
+		{"oss-cn-beijing.aliyuncs.com", false},         // hostname
+		{"abcdefghijklmnopqrstuvwxyz", false},          // all letters, entropy low
+		{"a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6", true},     // mixed 36 chars
 	}
 	for _, c := range cases {
 		if got := ValueLooksSecret(c.val); got != c.want {
@@ -58,9 +58,9 @@ func TestMask(t *testing.T) {
 		want string
 	}{
 		{"sk-1234567890abcdef", "sk******ef"},
-		{"hello", "hello"},                       // not secret
-		{"604800", "604800"},                     // not secret
-		{"x", "x"},                               // single char, not secret
+		{"hello", "hello"},   // not secret
+		{"604800", "604800"}, // not secret
+		{"x", "x"},           // single char, not secret
 	}
 	for _, c := range cases {
 		if got := Mask(c.val); got != c.want {

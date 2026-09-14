@@ -55,10 +55,10 @@ func newMockVault(t *testing.T) (*httptest.Server, *Client) {
 	mux.HandleFunc("/v1/database/creds/", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodGet {
 			json.NewEncoder(w).Encode(map[string]any{
-				"data":         map[string]string{"username": "v-token-role-abc", "password": "generated-pass-xyz"},
-				"lease_id":     "database/creds/app-role/xyz",
+				"data":           map[string]string{"username": "v-token-role-abc", "password": "generated-pass-xyz"},
+				"lease_id":       "database/creds/app-role/xyz",
 				"lease_duration": 3600,
-				"renewable":    true,
+				"renewable":      true,
 			})
 		}
 	})
