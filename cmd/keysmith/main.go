@@ -20,24 +20,28 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/sscodeai/keysmith/internal/leakscan"
 	"github.com/sscodeai/keysmith/internal/mask"
 	"github.com/sscodeai/keysmith/internal/mcp"
+	"github.com/sscodeai/keysmith/internal/redeem"
 	"github.com/sscodeai/keysmith/internal/store"
 	"github.com/sscodeai/keysmith/internal/vault"
 )
 
-var version = "0.3.0"
+var version = "0.4.0"
 
 func main() {
 	storeDir := flag.String("store", defaultStoreDir(), "directory holding age-encrypted secrets (key.txt + secrets.enc)")
@@ -304,6 +308,41 @@ func runCLI(storeDir, vaultAddr string, args []string) error {
 		fmt.Printf("renewable: %v\n", creds.Renewable)
 		return nil
 
+	case "token":
+		// keysmith token NAME [--ttl 1h]
+		// Issue a session-bound placeholder for NAME. The token is a reference,
+		// not a secret: it only resolves locally, only in this session, and only
+		// for the names issued here.
+		if len(rest) < 1 {
+			return fmt.Errorf("token requires a key name: keysmith token NAME [--ttl 1h]")
+		}
+		name := rest[0]
+		ttl := redeem.DefaultTTL
+		if v, ok := flagValue(rest, "--ttl"); ok {
+			d, err := time.ParseDuration(v)
+			if err != nil {
+				return fmt.Errorf("invalid --ttl %q: %w", v, err)
+			}
+			ttl = d
+		}
+		// Fail closed: never issue a token for a name this store cannot resolve.
+		if _, err := st.Get(name); err != nil {
+			return fmt.Errorf("cannot issue a token for %q: %w", name, err)
+		}
+		sess, err := redeem.NewSessions(storeDir).Issue(name, ttl)
+		if err != nil {
+			return err
+		}
+		fmt.Fprintf(os.Stderr, "keysmith: session %s (names: %s), expires at %s\n",
+			sess.ID[:8], strings.Join(sess.Names, ","),
+			sess.ExpiresAt.Local().Format(time.RFC3339))
+		fmt.Println(sess.Token(name))
+		return nil
+
+	case "run":
+		// keysmith run [--session SID] --env KEY='<template>' ... -- cmd args...
+		return runRedeemed(storeDir, st, rest)
+
 	case "help", "-h", "--help":
 		printUsage()
 		return nil
@@ -328,6 +367,9 @@ USAGE:
   keysmith rotate KEY [len]   # generate + store new strong secret
   keysmith delete KEY         # remove a key
   keysmith scan [--rotate] [repo-dir]  # scan git history for leaked secrets
+  keysmith token NAME [--ttl 1h]       # issue a session-bound placeholder token
+  keysmith run [--session SID] --env KEY='<template>' -- cmd args...
+                                       # redeem tokens locally, then run cmd
   keysmith -version
 
 FLAGS:
@@ -337,6 +379,9 @@ SECURITY:
   - set reads the value from stdin — never pass secrets as arguments
   - get/list return masked values by default (sk******ij)
   - --unsafe is the ONLY way to see plaintext — use as a last resort
+  - run keeps values out of argv, out of the transcript, and out of any
+    model request: tokens are redeemed locally, into the child's environment
+  - redemption fails closed: any error aborts the command, with no fallback
   - secrets are stored age-encrypted at rest (key.txt 0600, secrets.enc armor)
 `
 }
@@ -348,6 +393,182 @@ func containsFlag(args []string, flag string) bool {
 		}
 	}
 	return false
+}
+
+// flagValue returns the value of "--name value" or "--name=value".
+func flagValue(args []string, name string) (string, bool) {
+	for i, a := range args {
+		if a == name && i+1 < len(args) {
+			return args[i+1], true
+		}
+		if strings.HasPrefix(a, name+"=") {
+			return strings.TrimPrefix(a, name+"="), true
+		}
+	}
+	return "", false
+}
+
+const runUsage = `usage: keysmith run [--session SID] --env KEY='<template>' [--env ...] -- <command> [args...]
+
+  Each --env value is a template. A [[keysmith:v1:NAME:sid]] token inside it is
+  replaced with the real value before the command starts, and the result is put
+  into the child's environment under KEY. The value never appears in the command
+  arguments, in this process's argv, or in any model request.
+
+  Issue tokens first:  TOKEN=$(keysmith token DB_PASSWORD)
+  Then:                keysmith run --env AUTH="Bearer $TOKEN" -- sh -c 'curl -H "Authorization: $AUTH" https://example.test'`
+
+// runRedeemed implements `keysmith run`: resolve tokens inside --env templates
+// locally, then exec the command with the values in its environment.
+//
+// Fail-closed behaviour (docs/THREAT-MODEL.md):
+//   - a token in the command arguments is refused: argv is visible to every
+//     user on the box through ps, so values must travel in the environment
+//   - any resolution failure, and any failure to write the audit record,
+//     aborts before the child process starts
+func runRedeemed(storeDir string, st *store.Store, rest []string) error {
+	var templates []string
+	sid := os.Getenv("KEYSMITH_SESSION")
+
+	i := 0
+parse:
+	for i < len(rest) {
+		switch a := rest[i]; {
+		case a == "--":
+			i++
+			break parse
+		case a == "--env" && i+1 < len(rest):
+			templates = append(templates, rest[i+1])
+			i += 2
+		case strings.HasPrefix(a, "--env="):
+			templates = append(templates, strings.TrimPrefix(a, "--env="))
+			i++
+		case a == "--session" && i+1 < len(rest):
+			sid = rest[i+1]
+			i += 2
+		case strings.HasPrefix(a, "--session="):
+			sid = strings.TrimPrefix(a, "--session=")
+			i++
+		default:
+			return fmt.Errorf("run: unexpected argument %q (options must come before --)\n\n%s", a, runUsage)
+		}
+	}
+	cmdArgs := rest[i:]
+
+	if len(cmdArgs) == 0 {
+		return fmt.Errorf("run: no command given\n\n%s", runUsage)
+	}
+	if len(templates) == 0 {
+		return fmt.Errorf("run: at least one --env KEY=<template> is required\n\n%s", runUsage)
+	}
+	for _, a := range cmdArgs {
+		if redeem.HasToken(a) {
+			return errors.New("run: refusing a keysmith token in the command arguments — argv is readable by every user via ps\n" +
+				"carry it in the environment instead, for example:\n" +
+				"  keysmith run --env AUTH='Bearer [[keysmith:v1:NAME:sid]]' -- sh -c 'curl -H \"Authorization: $AUTH\" https://example.test'")
+		}
+	}
+
+	needsSession := false
+	for _, tpl := range templates {
+		if redeem.HasToken(tpl) {
+			needsSession = true
+			break
+		}
+	}
+
+	sessions := redeem.NewSessions(storeDir)
+	resolver := redeem.NewResolver(sessions, st)
+	var sess *redeem.Session
+	if needsSession {
+		var err error
+		if sid != "" {
+			sess, err = sessions.LoadPrefix(sid)
+		} else {
+			sess, err = sessions.Current()
+		}
+		if err != nil {
+			return err
+		}
+	}
+
+	childEnv := make([]string, 0, len(templates))
+	var redeemed []string
+	for _, tpl := range templates {
+		eq := strings.Index(tpl, "=")
+		if eq <= 0 {
+			return fmt.Errorf("run: --env expects KEY=<template>, got %q", tpl)
+		}
+		key := tpl[:eq]
+		if !validEnvName(key) {
+			return fmt.Errorf("run: --env name %q is not a valid environment variable name", key)
+		}
+		value, names, err := resolver.Resolve(tpl[eq+1:])
+		if err != nil {
+			// Fail closed: nothing is exported, nothing is executed.
+			return fmt.Errorf("run: %w", err)
+		}
+		childEnv = append(childEnv, key+"="+value)
+		redeemed = append(redeemed, names...)
+	}
+
+	if len(redeemed) > 0 {
+		// Audited before the child starts, and the audit is part of the
+		// fail-closed path: no record, no execution.
+		rec := redeem.AuditRecord{
+			Session: sess.ID[:8],
+			Keys:    redeem.SortedUnique(redeemed),
+			Command: filepath.Base(cmdArgs[0]),
+			Argc:    len(cmdArgs) - 1,
+			PID:     os.Getpid(),
+		}
+		if err := redeem.AppendAudit(storeDir, rec); err != nil {
+			return fmt.Errorf("run: cannot write the redemption audit log: %w", err)
+		}
+		fmt.Fprintf(os.Stderr, "keysmith: redeemed %s for %s\n",
+			strings.Join(rec.Keys, ","), rec.Command)
+	}
+
+	child := exec.Command(cmdArgs[0], cmdArgs[1:]...)
+	child.Stdin, child.Stdout, child.Stderr = os.Stdin, os.Stdout, os.Stderr
+	child.Env = append(envWithout(os.Environ(), "KEYSMITH_SESSION"), childEnv...)
+
+	if err := child.Run(); err != nil {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
+			os.Exit(exitErr.ExitCode())
+		}
+		return fmt.Errorf("run: %w", err)
+	}
+	return nil
+}
+
+// envWithout drops every entry for the named variable, so a redeemed session
+// id never reaches the child through the inherited environment.
+func envWithout(env []string, name string) []string {
+	out := env[:0:0]
+	for _, e := range env {
+		if strings.HasPrefix(e, name+"=") {
+			continue
+		}
+		out = append(out, e)
+	}
+	return out
+}
+
+func validEnvName(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i, r := range s {
+		switch {
+		case r == '_', r >= 'A' && r <= 'Z', r >= 'a' && r <= 'z':
+		case i > 0 && r >= '0' && r <= '9':
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 func sortStrings(s []string) {
