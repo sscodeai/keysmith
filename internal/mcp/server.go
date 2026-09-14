@@ -104,7 +104,7 @@ func NewServer(st *store.Store) (*Server, error) {
 	}
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "get",
-		Description: "Read a single secret's MASKED value (use --unsafe only if you must see plaintext)",
+		Description: "Read a single secret's MASKED value. MCP never returns plaintext — to use a value without reading it, redeem it with `keysmith run` on the host.",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, args getArgs) (*mcp.CallToolResult, any, error) {
 		v, err := st.Get(args.Key)
 		if err != nil {
@@ -146,7 +146,7 @@ func NewServer(st *store.Store) (*Server, error) {
 	}
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "rotate",
-		Description: "Generate a new random secret for key and store it. Returns the masked value (plaintext via --unsafe only).",
+		Description: "Generate a new random secret for key and store it. Returns the masked value only; plaintext is never returned over MCP.",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, args rotateArgs) (*mcp.CallToolResult, any, error) {
 		if args.Key == "" {
 			return nil, nil, errors.New("key is required")
