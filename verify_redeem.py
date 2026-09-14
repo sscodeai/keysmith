@@ -19,10 +19,15 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 
-BIN = os.environ.get("KEYSMITH_BIN", "/tmp/ks")
-STORE = os.environ.get("KEYSMITH_REDEEM_STORE", "/tmp/ks-redeem-store")
+REPO_ROOT = os.path.dirname(os.path.abspath(__file__))
+TMP = tempfile.gettempdir()
+
+# Binary path: env override, else the repo build (mirrors e2e_test.py).
+BIN = os.environ.get("KEYSMITH_BIN", os.path.join(REPO_ROOT, "bin", "keysmith"))
+STORE = os.environ.get("KEYSMITH_REDEEM_STORE", os.path.join(TMP, "ks-redeem-store"))
 IS_LINUX = sys.platform.startswith("linux")
 CANARY = "sk-synthetic-REDEEM-CANARY-0002"   # synthetic fixture, not a credential
 PLAIN = "plain-value-9x"
@@ -77,7 +82,7 @@ def main():
     check("consecutive tokens share one session", tok2.rstrip("]").rsplit(":", 1)[1] == sid)
 
     print("\n[2] happy path — the child gets the real value, argv stays clean")
-    pidfile = "/tmp/ks-redeem-child.pid"
+    pidfile = os.path.join(TMP, "ks-redeem-child.pid")
     if os.path.exists(pidfile):
         os.remove(pidfile)
     child = ("import os,sys,time\n"
@@ -114,7 +119,7 @@ def main():
     check("token does appear in the wrapper's argv (by design)", tok in wrapper_args)
 
     print("\n[3] token in argv is refused")
-    marker = "/tmp/ks-redeem-marker"
+    marker = os.path.join(TMP, "ks-redeem-marker")
     if os.path.exists(marker):
         os.remove(marker)
     r = run_cmd(["--env", "X=1", "--", "sh", "-c", "touch %s; echo ran" % marker])
