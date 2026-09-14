@@ -42,7 +42,8 @@ flowchart TB
 
 | レイヤー | コンポーネント | 責務 |
 |---|---|---|
-| Agent layer | LLM + SKILL.md | 動作ルール。raw read をしない、ハンドルを渡す |
+| Agent layer | LLM + SKILL.md | 動作ルール。raw read をしない、ハンドルを渡す、平文を要求せずトークンを redeem する |
 | MCP layer | internal/mcp | protocol server。tools と resources |
 | Storage layer | internal/store | age で暗号化された保存、atomic write、0600 |
 | Masking layer | internal/mask | prefix/entropy/URL セグメント単位のマスキング規則 |
+| Redemption layer | internal/redeem | セッションに紐づくトークンをローカルで子プロセスの環境変数へ解決。fail-closed、値を持たない audit log |

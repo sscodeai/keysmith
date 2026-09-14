@@ -274,6 +274,7 @@ silent when clean. Wire it into any cron:
 - [x] CLI subcommands (add/get/rotate/scan without MCP)
 - [x] Streamable HTTP transport (MCP 2025 standard, single POST endpoint)
 - [x] Scheduled leak-scan watchdog script (cron-driven self-healing)
+- [x] Local redemption layer (session-bound tokens resolved locally; fail-closed, value-free audit log)
 - [ ] Multi-tenant / team mode (share store across agents with audit log)
 - [ ] Cloud credentials (AWS STS / GCP short-lived)
 

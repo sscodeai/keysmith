@@ -6,6 +6,8 @@
 
 Keysmith は、AI エージェントに安全なシークレット管理を提供する MCP サーバー兼 CLI です。マスキングを最後の防衛線と位置づけつつ、シークレット漏えいを構造的に防ぎます。保存時の暗号化、マスク済みビュー、ハンドル渡し、自己修復ローテーション、短 TTL の動的認証情報を備えています。
 
+マスキングだけでは隙間が残ります。マスク済みの値は**使えない**からです。redemption レイヤーがその隙間を埋めます。エージェントはシークレットではないトークンを扱い、keysmith がこのマシン上で実値をコマンドの環境変数へ差し替えます。値はモデルへのリクエスト、ツール結果、transcript、引数リストのどこにも現れません。詳細は [docs/REDEEM.md](docs/REDEEM.md) と [docs/THREAT-MODEL.md](docs/THREAT-MODEL.md) を参照してください。
+
 Go 製です。単一の静的バイナリで、ランタイム依存はありません。
 
 ## なぜ必要か
@@ -21,6 +23,7 @@ Keysmith は、**多層セキュリティモデル**でこれを解決します�
 | ハンドル渡し | `put` は transcript ではなく一時ファイル引数から値を読む | ツール呼び出し transcript 内の平文 |
 | 自己修復ローテーション | `scan --rotate` が漏えいを検出し、漏れた値を無効化 | 古い漏えい済み認証情報が使われ続けること |
 | 短 TTL (Vault) | 動的 DB 認証情報は 1 時間で期限切れ | 漏えいした認証情報の価値が残ること |
+| Redemption | `keysmith run` がトークンをローカルで差し替え、子プロセスの環境変数へ渡す | 認証情報を「使う」必要があるエージェントが平文を出力してしまうこと。`argv`、transcript、ログ内の平文 |
 
 ## インストール
 
@@ -91,7 +94,26 @@ keysmith set API_KEY < value.txt     # stdin から値を読み、shell history 
 keysmith rotate API_KEY 32           # 強力な新しいシークレットを生成して保存
 keysmith delete API_KEY              # キーを削除
 keysmith scan [--rotate] [repo-dir]  # git 履歴から漏えいしたシークレットをスキャン
+keysmith token API_KEY               # セッションに紐づくプレースホルダートークンを発行
+keysmith run --env AUTH="Bearer <token>" -- sh -c 'curl -H "Authorization: $AUTH" https://…'
 ```
+
+## 値を読まずに認証情報を使う
+
+エージェントは平文を知らなくても認証情報を「使う」ことができます。
+
+```sh
+TOKEN=$(keysmith token API_KEY)                 # stdout にトークン、stderr にセッション情報
+keysmith run --env AUTH="Bearer $TOKEN" -- sh -c 'curl -s -H "Authorization: $AUTH" https://api.example.test/me'
+```
+
+- `TOKEN` はシークレットではなく参照です (`[[keysmith:v1:API_KEY:8f3a2b1c]]`)。解決できるのはローカル、発行セッションが有効な間、そしてそのセッションで発行されたキー名だけです。
+- 実値はこのマシン上で差し替えられ、子プロセスの環境変数に入ります。モデルへのリクエスト、transcript、`argv` のどこにも入りません。
+- コマンド引数内のトークンは拒否されます。`argv` は `ps` で全ユーザーから見えるためです。`--env` に置き、子プロセスの shell に展開させてください。
+- redemption は fail-closed です。未知または期限切れのセッション、そのセッションで発行されていないキー名、値の欠落、不正なトークン、audit log の書き込み失敗。いずれもコマンド起動前に中止します。トークンをそのまま転送するフォールバックも、平文を転送するフォールバックもありません。
+- `<store>/audit.log` にはキー**名**、コマンドの basename、引数の個数だけを記録します。値も引数リスト全体も記録しません。
+
+トークンの文法と fail-closed の一覧は [docs/REDEEM.md](docs/REDEEM.md) にあります。
 
 Vault バックエンドのコマンドです。`-vault` と一緒に使います。
 
@@ -133,6 +155,7 @@ flowchart TB
         MASK[masking rules<br/>internal/mask]
         SCAN[leak-scan + self-healing<br/>keysmith scan --rotate]
         VAULT[Vault short-TTL creds<br/>internal/vault]
+        REDEEM[local redemption<br/>internal/redeem]
     end
 
     subgraph Auto["Automation"]
@@ -155,7 +178,7 @@ flowchart TB
 
 | レイヤー | Capability | 関係 |
 |---|---|---|
-| Core | age store + mask + rotate + scan | 基盤となるプリミティブ |
+| Core | age store + mask + rotate + scan + redeem | 基盤となるプリミティブ |
 | Automation | `scripts/scan-cron.sh` | `scan --rotate` をスケジュール実行 |
 | Access | stdio / SSE / Streamable | 3 つの transport、1 つのサーバー |
 
@@ -166,15 +189,28 @@ flowchart TB
 - **保存時**: 常に age (X25519) で暗号化され、armor 形式です。平文ファイルはディスク上に存在しません。atomic write (temp + rename) と `0600` 権限を使います。
 - **コンテキスト内**: マスク済み値のみです。マスキングは先頭/末尾 2 文字を残し (`sk******ij`)、認証情報を識別できるが露出しない形にします。
 - **Transcript 内**: `put` は平文を引数として受け取りません。一時ファイルパスを読み、読み取り後にファイルを削除します。
+- **使用時**: `keysmith run` はセッションに紐づくトークンをローカルで解決し、値を子プロセスの環境変数へ渡します。値は `argv`、audit log、モデルへのリクエストに到達しません。失敗時はコマンド起動前に中止し、平文フォールバックもトークンのそのまま転送も行いません。
 - **マスキング規則**: キー名マーカー (SECRET/TOKEN/PASSWORD/API_KEY/DSN...)、既知の値プレフィックス (sk-, ghp_, glpat-, xoxb-, JWT...)、高エントロピーな英数字列 (英字と数字が混在する 20 文字以上、Shannon entropy 3.5 以上) を使います。URL 形状の値はセグメントごとにマスクされます。userinfo のパスワードは常にマスクされ、高エントロピーな path/query はマスクされ、host/port は残ります。timeout や retry などの純数字値はマスクされません。
 
 ## 開発
 
 ```sh
-go test ./...        # unit tests (mask + store + vault + leakscan)
-go vet ./...         # static checks
-python3 e2e_test.py  # MCP protocol の完全な round-trip
+go test ./...            # unit tests (mask + store + vault + leakscan + redeem)
+go vet ./...             # static checks
+python3 e2e_test.py      # MCP protocol の完全な round-trip
+python3 verify_redeem.py # redemption の end-to-end 検証 (実プロセスの /proc 比較、fail-closed、audit log)
 ```
+
+## 境界 (Boundaries)
+
+keysmith は認証情報が取りうる経路を狭めますが、信頼できないマシンを安全にはしません。
+
+- 同じユーザーで動くプロセスは `key.txt` を読み、ストアを復号できます。`0600`/`0700` は同一 UID のプロセスを隔離しません。
+- 同梱の agent skill は**guidance であり、アクセス制御ではありません**。ストアに無いファイルをエージェントが `cat` することを止められません。強制される経路は store API、マスク済みビュー、redemption レイヤーです。
+- マスキングは値の先頭と末尾 2 文字 (`sk******ij`) を残し、認証情報を見分けられるようにします。これは意図的な小さな開示です。
+- マスク済みビューと leak-scanner は best-effort の検出であり、証明ではありません。マッチしなかった値はマスクされません。
+
+想定する攻撃者と、明示的に範囲外とする項目は [docs/THREAT-MODEL.md](docs/THREAT-MODEL.md) にあります。
 
 ## 定期 leak-scan (cron self-healing)
 
@@ -192,6 +228,7 @@ python3 e2e_test.py  # MCP protocol の完全な round-trip
 - [x] CLI subcommands (MCP なしで add/get/rotate/scan)
 - [x] Streamable HTTP transport (MCP 2025 標準、単一 POST エンドポイント)
 - [x] Scheduled leak-scan watchdog script (cron 駆動の自己修復)
+- [x] Redemption layer (セッションに紐づくトークンをローカルで実値に差し替え。fail-closed、値を持たない audit log)
 - [ ] Multi-tenant / team mode (audit log 付きでストアをエージェント間共有)
 - [ ] Cloud credentials (AWS STS / GCP の短命認証情報)
 
