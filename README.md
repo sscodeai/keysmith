@@ -35,6 +35,7 @@ Keysmith fixes this with a **layered security model**:
 | Self-healing rotation | `scan --rotate` detects leaks, kills the leaked value | Stale leaked credentials keep working |
 | Short-TTL (Vault) | dynamic DB creds expire in 1h | Leaked credentials become worthless |
 | Redemption | `keysmith run` substitutes a token locally, into the child's environment | An agent that must *use* a credential being tempted to print it; plaintext in `argv`, transcripts, or logs |
+| Target binding | `--allow-host` / `--allow-path` / `--allow-header` at issue time, checked against `run --target` | A token being redeemed into a command aimed at an attacker's endpoint |
 
 ## Install
 
@@ -106,7 +107,9 @@ keysmith rotate API_KEY 32           # generate + store new strong secret
 keysmith delete API_KEY               # remove a key
 keysmith scan [--rotate] [repo-dir]  # scan git history for leaked secrets
 keysmith token API_KEY               # issue a session-bound placeholder token
-keysmith run --env AUTH="Bearer <token>" -- sh -c 'curl -H "Authorization: $AUTH" https://…'
+keysmith token API_KEY --allow-host api.example.test --allow-path /v1/
+                                     # ...bound to a destination (see below)
+keysmith run --target https://api.example.test/v1/me --env AUTH="Bearer <token>" -- sh -c 'curl -H "Authorization: $AUTH" https://api.example.test/v1/me'
 ```
 
 ## Use a credential without reading it
@@ -125,6 +128,10 @@ keysmith run --env AUTH="Bearer $TOKEN" -- sh -c 'curl -s -H "Authorization: $AU
   environment. It never enters a model request, a transcript, or `argv`.
 - A token in the command arguments is refused, because `argv` is readable by
   every user via `ps`. Put it in `--env` and let the child's shell expand it.
+- A token issued with `--allow-host` / `--allow-path` / `--allow-header` is
+  **bound to a destination**: `run` then refuses to redeem it unless `--target`
+  declares a matching URL (https, or loopback http). Unbound tokens still work,
+  with a warning.
 - Redemption fails closed: unknown or expired session, a name not issued in that
   session, a missing value, a malformed token, or an unwritable audit log all
   abort before the command starts. No fallback ever forwards a literal token or
@@ -220,7 +227,9 @@ itself, transports decide how agents connect.
 - **At use time**: `keysmith run` redeems a session-bound token locally and
   places the value in the child's environment. Values never reach `argv`, the
   audit log, or a model request; every failure aborts before the command starts
-  (no plaintext fallback, no literal-token fallback).
+  (no plaintext fallback, no literal-token fallback). A bound token also has to
+  satisfy `--target`: the declared destination must match the binding, and the
+  target is recorded in the audit line.
 - **Masking rules**: key-name markers (SECRET/TOKEN/PASSWORD/API_KEY/DSN...),
   known value prefixes (sk-, ghp_, glpat-, xoxb-, JWT...), and high-entropy
   alphanumeric runs (≥20 chars mixing letters+digits, Shannon entropy ≥3.5).

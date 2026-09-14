@@ -46,4 +46,4 @@ flowchart TB
 | MCP layer | internal/mcp | protocol server。tools と resources |
 | Storage layer | internal/store | age で暗号化された保存、atomic write、0600 |
 | Masking layer | internal/mask | prefix/entropy/URL セグメント単位のマスキング規則 |
-| Redemption layer | internal/redeem | セッションに紐づくトークンをローカルで子プロセスの環境変数へ解決。fail-closed、値を持たない audit log |
+| Redemption layer | internal/redeem | セッションに紐づくトークンをローカルで子プロセスの環境変数へ解決。fail-closed、`run --target` に対する宛先結合の強制、値を持たない audit log |

@@ -50,9 +50,14 @@ keysmith run --env AUTH="Bearer $TOKEN" -- sh -c 'curl -s -H "Authorization: $AU
 - A token in the command arguments (`argv`) is refused on purpose: `argv` is
   readable by every user through `ps`. Put it in `--env` and let the child's
   shell expand `$AUTH` inside the child.
+- A token issued with `--allow-host` / `--allow-path` / `--allow-header` is
+  **bound**: `run` refuses to redeem it unless `--target <url>` matches the
+  binding. Unbound tokens still work and print a warning — bind the ones that
+  matter.
 - Redemption fails closed. If it refuses, do **not** retry with `--unsafe` —
   fix the cause: issue a fresh token (`keysmith token NAME`), check the name is
-  in the session, or check the session has not expired (default TTL 1h).
+  in the session, check the session has not expired (default TTL 1h), or declare
+  the destination with `--target`.
 - The command's exit code is propagated, so `run` is script-safe.
 
 ## Pitfalls

@@ -24,6 +24,7 @@ Keysmith は、**多層セキュリティモデル**でこれを解決します�
 | 自己修復ローテーション | `scan --rotate` が漏えいを検出し、漏れた値を無効化 | 古い漏えい済み認証情報が使われ続けること |
 | 短 TTL (Vault) | 動的 DB 認証情報は 1 時間で期限切れ | 漏えいした認証情報の価値が残ること |
 | Redemption | `keysmith run` がトークンをローカルで差し替え、子プロセスの環境変数へ渡す | 認証情報を「使う」必要があるエージェントが平文を出力してしまうこと。`argv`、transcript、ログ内の平文 |
+| Target binding | 発行時に `--allow-host` / `--allow-path` / `--allow-header` で結合し、`run --target` で照合 | トークンが攻撃者のエンドポイント宛のコマンドに解決されること |
 
 ## インストール
 
@@ -95,7 +96,9 @@ keysmith rotate API_KEY 32           # 強力な新しいシークレットを�
 keysmith delete API_KEY              # キーを削除
 keysmith scan [--rotate] [repo-dir]  # git 履歴から漏えいしたシークレットをスキャン
 keysmith token API_KEY               # セッションに紐づくプレースホルダートークンを発行
-keysmith run --env AUTH="Bearer <token>" -- sh -c 'curl -H "Authorization: $AUTH" https://…'
+keysmith token API_KEY --allow-host api.example.test --allow-path /v1/
+                                     # ...宛先に結合する（下記参照）
+keysmith run --target https://api.example.test/v1/me --env AUTH="Bearer <token>" -- sh -c 'curl -H "Authorization: $AUTH" https://api.example.test/v1/me'
 ```
 
 ## 値を読まずに認証情報を使う
@@ -110,6 +113,7 @@ keysmith run --env AUTH="Bearer $TOKEN" -- sh -c 'curl -s -H "Authorization: $AU
 - `TOKEN` はシークレットではなく参照です (`[[keysmith:v1:API_KEY:8f3a2b1c]]`)。解決できるのはローカル、発行セッションが有効な間、そしてそのセッションで発行されたキー名だけです。
 - 実値はこのマシン上で差し替えられ、子プロセスの環境変数に入ります。モデルへのリクエスト、transcript、`argv` のどこにも入りません。
 - コマンド引数内のトークンは拒否されます。`argv` は `ps` で全ユーザーから見えるためです。`--env` に置き、子プロセスの shell に展開させてください。
+- `--allow-host` / `--allow-path` / `--allow-header` 付きで発行したトークンは**宛先に結合**されます。その場合 `run` は `--target` が一致する URL（https、または loopback の http）を宣言しない限りトークンの解決を拒否します。結合のないトークンは従来どおり動作しますが警告が出ます。
 - redemption は fail-closed です。未知または期限切れのセッション、そのセッションで発行されていないキー名、値の欠落、不正なトークン、audit log の書き込み失敗。いずれもコマンド起動前に中止します。トークンをそのまま転送するフォールバックも、平文を転送するフォールバックもありません。
 - `<store>/audit.log` にはキー**名**、コマンドの basename、引数の個数だけを記録します。値も引数リスト全体も記録しません。
 
@@ -189,7 +193,7 @@ flowchart TB
 - **保存時**: 常に age (X25519) で暗号化され、armor 形式です。平文ファイルはディスク上に存在しません。atomic write (temp + rename) と `0600` 権限を使います。
 - **コンテキスト内**: マスク済み値のみです。マスキングは先頭/末尾 2 文字を残し (`sk******ij`)、認証情報を識別できるが露出しない形にします。
 - **Transcript 内**: `put` は平文を引数として受け取りません。一時ファイルパスを読み、読み取り後にファイルを削除します。
-- **使用時**: `keysmith run` はセッションに紐づくトークンをローカルで解決し、値を子プロセスの環境変数へ渡します。値は `argv`、audit log、モデルへのリクエストに到達しません。失敗時はコマンド起動前に中止し、平文フォールバックもトークンのそのまま転送も行いません。
+- **使用時**: `keysmith run` はセッションに紐づくトークンをローカルで解決し、値を子プロセスの環境変数へ渡します。値は `argv`、audit log、モデルへのリクエストに到達しません。失敗時はコマンド起動前に中止し、平文フォールバックもトークンのそのまま転送も行いません。結合済みトークンは `--target` も満たす必要があり、宣言された宛先は audit 行に記録されます。
 - **マスキング規則**: キー名マーカー (SECRET/TOKEN/PASSWORD/API_KEY/DSN...)、既知の値プレフィックス (sk-, ghp_, glpat-, xoxb-, JWT...)、高エントロピーな英数字列 (英字と数字が混在する 20 文字以上、Shannon entropy 3.5 以上) を使います。URL 形状の値はセグメントごとにマスクされます。userinfo のパスワードは常にマスクされ、高エントロピーな path/query はマスクされ、host/port は残ります。timeout や retry などの純数字値はマスクされません。
 
 ## 開発

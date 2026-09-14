@@ -35,7 +35,7 @@ listed in its session.
 ## Sessions
 
 ```sh
-TOKEN=$(keysmith token DEMO_KEY)          # stdout: the token. stderr: session + expiry.
+TOKEN=$(keysmith token DEMO_KEY --allow-host api.example.test --allow-path /v1/)   # stdout: the token. stderr: session, binding, expiry.
 TOKEN=$(keysmith token DEMO_KEY --ttl 15m)
 ```
 
@@ -43,6 +43,11 @@ TOKEN=$(keysmith token DEMO_KEY --ttl 15m)
   in a row share one session and one expiry. `--ttl` (default `1h`) extends it.
 - Issuing fails closed: a token is never created for a name the store cannot
   resolve.
+- `--allow-host HOST`, `--allow-path PREFIX` and `--allow-header NAME` record a
+  **target binding** (see below). Without them the token is unbound, and issuing
+  says so on stderr.
+- Re-issuing a name that already carries a different binding is refused
+  (`ErrBindingConflict`), so a binding cannot be widened inside a session.
 - Session state lives in `<store>/sessions/` (dir `0700`, files `0600`). A
   session id is not a secret, but it is scoped: the value still has to come from
   the encrypted store.
@@ -73,6 +78,36 @@ keysmith run --env AUTH='Bearer [[keysmith:v1:DEMO_KEY:8f3a2b1c]]' -- sh -c 'cur
 The child's exit code is propagated, so `run` is safe in scripts and pipelines.
 `KEYSMITH_SESSION` is stripped from the child's environment.
 
+## Target binding
+
+A bare token can be redeemed into any command, which means a compromised agent
+holding one can post the value anywhere. Binding removes that: the restriction is
+recorded at issue time and enforced before the child exists.
+
+```sh
+TOKEN=$(keysmith token SLACK_TOKEN --allow-host hooks.slack.com --allow-path /services/)
+keysmith run --target https://hooks.slack.com/services/T000/B000/XXXX \
+  --env BODY="text=deploy done&token=$TOKEN" -- sh -c 'curl -s -d "$BODY" https://hooks.slack.com/services/T000/B000/XXXX'
+```
+
+Rules:
+
+| Flag | Meaning |
+|---|---|
+| `--allow-host HOST` | The declared target host must match. Repeatable. An entry starting with `.` matches that domain and its subdomains (`api.example.test` matches `.example.test`, `evil-example.test` does not). |
+| `--allow-path PREFIX` | The target's path must start with one of these. Repeatable. |
+| `--allow-header NAME` | The command text must mention `NAME:`, i.e. the value is meant to travel in that header. Repeatable. |
+
+`keysmith run --target URL` declares the destination. The URL must be `https`, or
+`http` only for a loopback host (`localhost`, `127.0.0.0/8`, `::1`); a query
+string or fragment is rejected rather than ignored, because that is where a
+hidden destination would sit.
+
+- A name with a binding **requires** `--target`, and every binding must pass.
+- A name without a binding is still redeemed anywhere, but `run` prints a warning
+  naming it, and `token` warns at issue time.
+- Nothing is executed and no audit line is written when a binding fails.
+
 ## Fail-closed rules
 
 Every one of these aborts **before the child process starts**. There is no
@@ -86,7 +121,11 @@ fallback that forwards a literal token, and no fallback that sends the value.
 | Name absent from the store, or stored value is empty | refuse |
 | Malformed or truncated reserved prefix (`[[keysmith:` present but no valid token) | refuse |
 | Token anywhere in the command arguments | refuse |
-| Audit record cannot be written | refuse |
+| A bound token used without `--target` | refuse |
+| Target host or path not allowed by the binding | refuse |
+| Target that is not https (except loopback http), or that carries a query string | refuse |
+| A bound header name missing from the command text | refuse |
+| Audit record cannot be written | refuse — after the binding check, before the child |
 | Any resolution error in one `--env` while another resolved fine | refuse — nothing is exported and nothing runs |
 
 ## Audit log
@@ -94,19 +133,23 @@ fallback that forwards a literal token, and no fallback that sends the value.
 `<store>/audit.log` (mode `0600`) gets one JSON line per redeemed command:
 
 ```json
-{"ts":"2026-09-14T02:11:07Z","session":"8f3a2b1c","keys":["DEMO_KEY"],"command":"curl","argc":3,"pid":41231}
+{"ts":"2026-09-14T02:11:07Z","session":"8f3a2b1c","keys":["DEMO_KEY"],"command":"curl","argc":3,"pid":41231,"target":"api.example.test/v1/me"}
 ```
 
-Key *names*, session, command basename, argument count, pid. Deliberately no
-values — and no full argument list either, because an argument list can itself
+Key *names*, session, command basename, argument count, pid, and — when a target
+was declared — its host and path (never the query string). Deliberately no
+values, and no full argument list either, because an argument list can itself
 contain a secret someone inlined by hand.
 
 ## What this does not do (yet)
 
-- **No multi-target policy.** A token can be redeemed into any command. A
-  binding of "this token may only go to host X" is the next step, and it is the
-  control that stops a compromised agent from redeeming a value and posting it
-  somewhere else.
+- **Binding constrains the redemption, not the child.** Once a command holds the
+  value it can send it anywhere, print it, or write it to a file. `--target` stops
+  a token from being *redeemed* into a command aimed elsewhere; it is not egress
+  control. That needs a network boundary (or the loopback proxy below).
+- **The target is declared, not observed.** `run` checks the `--target` URL and,
+  for headers, that the command text mentions them. It cannot see what the child
+  actually connects to.
 - **No local HTTP proxy.** Only processes started through `keysmith run` are
   covered. A loopback proxy would cover tools that build their own requests.
 - **No OS-level isolation.** A process running as your user can still read the
@@ -114,6 +157,8 @@ contain a secret someone inlined by hand.
   explicitly out of scope.
 - **No nesting.** A stored value that itself contains a token is inserted
   literally.
+- **Unbound tokens still work anywhere.** Issuing one prints a warning rather
+  than failing, so existing scripts keep working; bind the ones that matter.
 
 ## Verifying it yourself
 

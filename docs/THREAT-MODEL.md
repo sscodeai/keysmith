@@ -43,6 +43,12 @@ implying otherwise.
 6. **Audit without secrets.** The audit log records session id, key *names*,
    the command basename and argument count — never values and never full argv
    (an argument list can itself contain a hand-inlined secret).
+7. **Declare, then enforce, the destination.** A token can be bound at issue time
+   to hosts, path prefixes and headers, and `keysmith run --target` refuses to
+   redeem it for any other destination. This is what stops a token held by an
+   agent from being redeemed into a command aimed at an attacker's endpoint. It
+   constrains the *redemption*: it does not stop the child process from sending a
+   value it already holds anywhere.
 
 ## Known limits (do not overstate)
 

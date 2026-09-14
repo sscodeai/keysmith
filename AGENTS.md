@@ -32,6 +32,14 @@ agents that develop it.
    error message may contain a value.
 7. Redemption never puts a value in `argv`, and never logs a value or a full
    argument list (`<store>/audit.log` records key names only).
+8. **A bound token must be enforced.** A token issued with `--allow-host`,
+   `--allow-path` or `--allow-header` may only be redeemed when `keysmith run
+   --target` satisfies every recorded binding (host match, path prefix, header
+   present). A missing `--target`, a non-matching target, a non-https target
+   (except loopback http) and a target carrying a query string all refuse. The
+   binding is checked before the audit write and before the child starts, and a
+   re-issue that would widen or drop a binding must fail with
+   `ErrBindingConflict`.
 
 ## Workflow
 - Run `go test ./...` before committing — all packages must pass.

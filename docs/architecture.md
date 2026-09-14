@@ -46,4 +46,4 @@ flowchart TB
 | MCP layer | internal/mcp | protocol server: tools + resources |
 | Storage layer | internal/store | age encrypted residency, atomic writes, 0600 |
 | Masking layer | internal/mask | prefix/entropy/URL-segment masking rules |
-| Redemption layer | internal/redeem | session-bound tokens resolved locally into a child's environment; fail-closed; value-free audit log |
+| Redemption layer | internal/redeem | session-bound tokens resolved locally into a child's environment; fail-closed; target binding enforced against `run --target`; value-free audit log |

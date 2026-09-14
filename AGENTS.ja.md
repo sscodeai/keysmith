@@ -20,6 +20,7 @@
 5. マスキング規則は `internal/mask` にあります。entropy/prefix/URL segmentation のテストを green に保ってください。
 6. **redemption は fail-closed です** (`internal/redeem`、docs/THREAT-MODEL.md)。未知のセッション、期限切れセッション、そのセッションで発行されていないキー名、値の欠落または空値、不正な予約プレフィックス、`argv` 内のトークン、audit log の書き込み失敗。いずれの場合もコマンドを起動しません。トークンをそのまま転送するフォールバックも、平文を転送するフォールバックも存在せず、エラーメッセージに値を含めてはいけません。
 7. redemption は `argv` に値を置かず、値も引数リスト全体もログに残しません (`<store>/audit.log` はキー名のみを記録します)。
+8. **結合済みトークンは必ず強制されます。** `--allow-host` / `--allow-path` / `--allow-header` 付きで発行したトークンは、`keysmith run --target` が記録された結合をすべて満たす場合にのみ解決できます (host 一致、path prefix、header の存在)。`--target` の欠落、不一致の宛先、https 以外 (loopback の http を除く)、クエリ文字列付きの宛先はすべて拒否します。結合の検査は audit 書き込み前、子プロセス起動前に実行し、結合を緩める・落とす再発行は `ErrBindingConflict` で失敗させなければなりません。
 
 ## ワークフロー
 
