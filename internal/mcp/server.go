@@ -29,12 +29,16 @@ type Server struct {
 	mcp   *mcp.Server
 }
 
-// NewServer creates an MCP server backed by the given store.
-func NewServer(st *store.Store) (*Server, error) {
+// NewServer creates an MCP server backed by the given store. version is what
+// clients see as serverInfo.version; an empty value is reported as "dev".
+func NewServer(st *store.Store, version string) (*Server, error) {
+	if version == "" {
+		version = "dev"
+	}
 	s := &Server{store: st}
 	srv := mcp.NewServer(&mcp.Implementation{
 		Name:    "keysmith",
-		Version: "0.1.0",
+		Version: version,
 	}, nil)
 
 	// --- Resources: masked secret views (safe for agent context) ---

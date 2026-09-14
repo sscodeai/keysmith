@@ -75,7 +75,7 @@ func runMCPServer(storeDir, httpAddr, vaultAddr string, streamable bool) {
 	if err != nil {
 		log.Fatalf("store init: %v", err)
 	}
-	srv, err := mcp.NewServer(st)
+	srv, err := mcp.NewServer(st, version)
 	if err != nil {
 		log.Fatalf("mcp init: %v", err)
 	}
