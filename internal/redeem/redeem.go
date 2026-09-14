@@ -59,6 +59,9 @@ var (
 	ErrMalformedToken = errors.New("malformed or incomplete keysmith token")
 	ErrBadName        = errors.New("invalid key name")
 	ErrNoValues       = errors.New("resolver has no value source")
+	// ErrBindingConflict: re-issuing a name with a different binding inside one
+	// session is refused, so a binding cannot be widened after the fact.
+	ErrBindingConflict = errors.New("conflicting target binding in this session")
 )
 
 var tokenRe = regexp.MustCompile(`\[\[keysmith:v1:([A-Za-z0-9_.-]{1,64}):([0-9a-f]{8})\]\]`)
@@ -77,6 +80,18 @@ type Session struct {
 	CreatedAt time.Time `json:"created_at"`
 	ExpiresAt time.Time `json:"expires_at"`
 	Names     []string  `json:"names"`
+	// Bindings restricts where each issued name may be redeemed. A name that is
+	// absent here (or present with a zero binding) may be redeemed anywhere.
+	Bindings map[string]Binding `json:"bindings,omitempty"`
+}
+
+// Binding returns the binding recorded for name, if any.
+func (s *Session) Binding(name string) (Binding, bool) {
+	if s.Bindings == nil {
+		return Binding{}, false
+	}
+	b, ok := s.Bindings[name]
+	return b, ok
 }
 
 // Token renders the token a caller should embed for this session.
@@ -95,7 +110,8 @@ func (s *Session) HasName(name string) bool {
 }
 
 // AuditRecord is one line of the redemption audit log. It deliberately has no
-// field for a value and no field for the full argument list.
+// field for a value and no field for the full argument list. Target holds the
+// host and path of the declared destination, never its query string.
 type AuditRecord struct {
 	TS      string   `json:"ts"`
 	Session string   `json:"session"`
@@ -103,6 +119,7 @@ type AuditRecord struct {
 	Command string   `json:"command"`
 	Argc    int      `json:"argc"`
 	PID     int      `json:"pid"`
+	Target  string   `json:"target,omitempty"`
 }
 
 // Sessions stores issued sessions next to the encrypted store.
@@ -169,10 +186,18 @@ func (s *Sessions) LoadPrefix(prefix string) (*Session, error) {
 	return nil, ErrSessionUnknown
 }
 
-// Issue records that name is available for redemption in the current session.
-// It reuses the current session when one is still valid, so several tokens
-// issued in a row share a session id, and extends the TTL on each call.
+// Issue records that name is available for redemption in the current session,
+// with no target binding. It reuses the current session when one is still valid,
+// so several tokens issued in a row share a session id, and extends the TTL on
+// each call.
 func (s *Sessions) Issue(name string, ttl time.Duration) (*Session, error) {
+	return s.IssueBound(name, ttl, Binding{})
+}
+
+// IssueBound is Issue with a target binding recorded for the name. Re-issuing a
+// name that already carries a different binding fails closed, so a binding
+// cannot be widened (or silently dropped) inside one session.
+func (s *Sessions) IssueBound(name string, ttl time.Duration, b Binding) (*Session, error) {
 	if !nameRe.MatchString(name) {
 		return nil, fmt.Errorf("%w: %q", ErrBadName, name)
 	}
@@ -193,6 +218,16 @@ func (s *Sessions) Issue(name string, ttl time.Duration) (*Session, error) {
 	}
 	if !sess.HasName(name) {
 		sess.Names = append(sess.Names, name)
+	}
+	if prev, ok := sess.Binding(name); ok && prev.String() != b.String() {
+		return nil, fmt.Errorf("%w: key %q already has binding %s in session %s",
+			ErrBindingConflict, name, prev.String(), sess.ID[:8])
+	}
+	if !b.IsZero() {
+		if sess.Bindings == nil {
+			sess.Bindings = map[string]Binding{}
+		}
+		sess.Bindings[name] = b
 	}
 	sess.ExpiresAt = time.Now().Add(ttl)
 
