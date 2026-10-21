@@ -76,7 +76,7 @@ func ScanGitHistory(repoDir string, st *store.Store, autoRotate bool) ([]ScanRes
 		rotated := false
 		for val, key := range values {
 			if strings.Contains(trimmed, val) {
-				res := ScanResult{Key: key, Pattern: "exact-value", Location: line, Rotated: rotated}
+				res := ScanResult{Key: key, Pattern: "exact-value", Location: redactLine(line), Rotated: rotated}
 				if autoRotate && !rotated {
 					if _, err := st.Rotate(key, 32); err == nil {
 						res.Rotated = true
@@ -90,7 +90,7 @@ func ScanGitHistory(repoDir string, st *store.Store, autoRotate bool) ([]ScanRes
 
 		// 2) Pattern match (known secret shapes).
 		if isSecretPattern(trimmed) {
-			results = append(results, ScanResult{Pattern: "pattern", Location: line})
+			results = append(results, ScanResult{Pattern: "pattern", Location: redactLine(line)})
 		}
 	}
 
@@ -137,6 +137,20 @@ func isSecretPattern(line string) bool {
 		}
 	}
 	return false
+}
+
+// redactLine keeps the shape of a matched line (key name, diff marker) but
+// masks the value. A scan report is read in terminals, CI logs and issues, so
+// printing the leaked secret there would repeat the leak.
+func redactLine(line string) string {
+	trimmed := strings.TrimSpace(line)
+	if i := strings.IndexAny(trimmed, "=:"); i >= 0 {
+		rest := strings.TrimSpace(trimmed[i+1:])
+		if rest != "" {
+			return trimmed[:i+1] + " " + mask.Redact(rest)
+		}
+	}
+	return mask.Redact(trimmed)
 }
 
 func mustGet(st *store.Store, key string) string {

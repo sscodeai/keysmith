@@ -92,6 +92,14 @@ func TestMaskKeyUsesTheKeyName(t *testing.T) {
 	}
 }
 
+func TestRedactAlwaysMasks(t *testing.T) {
+	for _, v := range []string{"correcthorsebatterystaple", "hunter2", "postgres://u:pass@h/db"} {
+		if got := Redact(v); got == v {
+			t.Errorf("Redact(%q) returned the original value", v)
+		}
+	}
+}
+
 func TestMaskURL(t *testing.T) {
 	cases := []struct {
 		val  string

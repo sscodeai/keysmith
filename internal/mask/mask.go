@@ -139,6 +139,16 @@ func MaskKey(key, value string) string {
 	if !KeyNameIsSensitive(key) {
 		return Mask(value)
 	}
+	return Redact(value)
+}
+
+// Redact always masks a value, regardless of heuristics. Use it where the
+// caller already knows the text is sensitive — a line matched by the leak
+// scanner, for example — because the value heuristics can miss a passphrase.
+func Redact(value string) string {
+	if value == "" {
+		return ""
+	}
 	if urlSchemeRe.MatchString(value) {
 		return MaskURL(value)
 	}
