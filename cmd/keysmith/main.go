@@ -157,7 +157,7 @@ func runCLI(storeDir, vaultAddr string, args []string) error {
 		if unsafe {
 			fmt.Println(val)
 		} else {
-			fmt.Println(mask.Mask(val))
+			fmt.Println(mask.MaskKey(key, val))
 		}
 		return nil
 
@@ -179,7 +179,7 @@ func runCLI(storeDir, vaultAddr string, args []string) error {
 		if err := st.Set(key, value); err != nil {
 			return err
 		}
-		fmt.Printf("stored %s (masked: %s)\n", key, mask.Mask(value))
+		fmt.Printf("stored %s (masked: %s)\n", key, mask.MaskKey(key, value))
 		return nil
 
 	case "rotate":
@@ -246,7 +246,7 @@ func runCLI(storeDir, vaultAddr string, args []string) error {
 		if containsFlag(rest, "--unsafe") {
 			fmt.Println(val)
 		} else {
-			fmt.Println(mask.Mask(val))
+			fmt.Println(mask.MaskKey(rest[0], val))
 		}
 		return nil
 
@@ -271,7 +271,7 @@ func runCLI(storeDir, vaultAddr string, args []string) error {
 		if err := vc.SetKV(context.Background(), rest[0], value); err != nil {
 			return err
 		}
-		fmt.Printf("stored %s in vault (masked: %s)\n", rest[0], mask.Mask(value))
+		fmt.Printf("stored %s in vault (masked: %s)\n", rest[0], mask.MaskKey(rest[0], value))
 		return nil
 
 	case "vault-kv-list":
@@ -302,7 +302,7 @@ func runCLI(storeDir, vaultAddr string, args []string) error {
 			return err
 		}
 		fmt.Printf("username: %s\n", creds.Username)
-		fmt.Printf("password: %s (masked)\n", mask.Mask(creds.Password))
+		fmt.Printf("password: %s (masked)\n", mask.MaskKey("DB_PASSWORD", creds.Password))
 		fmt.Printf("lease_id: %s\n", creds.LeaseID)
 		fmt.Printf("ttl: %ds (auto-expires — leaked cred is harmless)\n", creds.LeaseTTL)
 		fmt.Printf("renewable: %v\n", creds.Renewable)

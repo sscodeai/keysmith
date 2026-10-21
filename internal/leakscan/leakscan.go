@@ -80,7 +80,7 @@ func ScanGitHistory(repoDir string, st *store.Store, autoRotate bool) ([]ScanRes
 				if autoRotate && !rotated {
 					if _, err := st.Rotate(key, 32); err == nil {
 						res.Rotated = true
-						res.NewMasked = mask.Mask(mustGet(st, key))
+						res.NewMasked = mask.MaskKey(key, mustGet(st, key))
 						rotated = true
 					}
 				}

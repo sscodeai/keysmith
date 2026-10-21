@@ -17,6 +17,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/sscodeai/keysmith/internal/mask"
 )
 
 // Client is a minimal Vault HTTP API client. It deliberately implements only
@@ -116,7 +118,7 @@ func (c *Client) ListKV(ctx context.Context) (map[string]string, error) {
 		if err != nil {
 			continue
 		}
-		result[k] = maskValue(v)
+		result[k] = mask.MaskKey(k, v)
 	}
 	return result, nil
 }
@@ -193,16 +195,4 @@ func (c *Client) doJSON(ctx context.Context, method, path string, body []byte, o
 		return json.NewDecoder(resp.Body).Decode(out)
 	}
 	return nil
-}
-
-// maskValue is a tiny inline masker for Vault values (reuses mask pkg when
-// wired, but kept standalone to avoid import cycle).
-func maskValue(v string) string {
-	if v == "" {
-		return ""
-	}
-	if len(v) <= 4 {
-		return v[:1] + "***"
-	}
-	return v[:2] + "******" + v[len(v)-2:]
 }

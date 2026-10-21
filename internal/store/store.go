@@ -219,7 +219,7 @@ func (s *Store) List() (map[string]string, error) {
 	}
 	out := make(map[string]string, len(m))
 	for k, v := range m {
-		out[k] = mask.Mask(v)
+		out[k] = mask.MaskKey(k, v)
 	}
 	return out, nil
 }

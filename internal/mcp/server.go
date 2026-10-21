@@ -117,7 +117,7 @@ func NewServer(st *store.Store, version string) (*Server, error) {
 			}
 			return nil, nil, fmt.Errorf("get %q: %w", args.Key, err)
 		}
-		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: mask.Mask(v)}}}, nil, nil
+		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: mask.MaskKey(args.Key, v)}}}, nil, nil
 	})
 
 	// put: set a secret. Value is read from a temp file path arg, so the

@@ -86,6 +86,20 @@ func TestListIsMasked(t *testing.T) {
 	}
 }
 
+func TestListMasksSensitiveKeyNames(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.Set("DB_PASSWORD", "correcthorsebatterystaple"); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	items, err := s.List()
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if v := items["DB_PASSWORD"]; v == "correcthorsebatterystaple" {
+		t.Errorf("List leaked a passphrase for a sensitive key name: %q", v)
+	}
+}
+
 func TestDelete(t *testing.T) {
 	s := newTestStore(t)
 	if err := s.Set("TMP", "secret1"); err != nil {
