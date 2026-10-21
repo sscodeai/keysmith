@@ -73,6 +73,9 @@ func ParseTarget(raw string) (*Target, error) {
 	if u.RawQuery != "" || u.Fragment != "" {
 		return nil, errors.New("target must not carry a query string or fragment")
 	}
+	if err := checkTargetPath(u); err != nil {
+		return nil, err
+	}
 	path := u.Path
 	if path == "" {
 		path = "/"
@@ -94,6 +97,36 @@ func isLoopback(host string) bool {
 		return ip.IsLoopback()
 	}
 	return false
+}
+
+// checkTargetPath refuses a path that the prefix check would read differently
+// from the server that receives it. url.Parse leaves ".." segments in Path, so
+// a binding on /services/ would otherwise accept /services/../../admin, which
+// the destination resolves outside the allowed prefix.
+func checkTargetPath(u *url.URL) error {
+	escaped := u.EscapedPath()
+	lower := strings.ToLower(escaped)
+	if strings.Contains(lower, "%2f") || strings.Contains(lower, "%5c") {
+		return errors.New("target path must not contain encoded slashes")
+	}
+	decoded, err := url.PathUnescape(escaped)
+	if err != nil {
+		return errors.New("target path is not valid percent-encoding")
+	}
+	if strings.Contains(decoded, `\`) {
+		return errors.New("target path must not contain a backslash")
+	}
+	for _, seg := range strings.Split(decoded, "/") {
+		// Strip path parameters ("..;x") before comparing: some servers treat
+		// the semicolon form as the same traversal.
+		if i := strings.Index(seg, ";"); i >= 0 {
+			seg = seg[:i]
+		}
+		if seg == "." || seg == ".." {
+			return errors.New("target path must not contain '.' or '..' segments")
+		}
+	}
+	return nil
 }
 
 // hostAllowed reports whether host matches one of the allowed entries. An entry

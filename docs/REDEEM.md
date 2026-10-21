@@ -101,7 +101,9 @@ Rules:
 `keysmith run --target URL` declares the destination. The URL must be `https`, or
 `http` only for a loopback host (`localhost`, `127.0.0.0/8`, `::1`); a query
 string or fragment is rejected rather than ignored, because that is where a
-hidden destination would sit.
+hidden destination would sit. The path is also rejected when it contains `.` or
+`..` segments, encoded slashes (`%2f`) or backslashes, so a path prefix cannot
+be escaped by a form the destination normalises after the check.
 
 - A name with a binding **requires** `--target`, and every binding must pass.
 - A name without a binding is still redeemed anywhere, but `run` prints a warning
@@ -124,6 +126,7 @@ fallback that forwards a literal token, and no fallback that sends the value.
 | A bound token used without `--target` | refuse |
 | Target host or path not allowed by the binding | refuse |
 | Target that is not https (except loopback http), or that carries a query string | refuse |
+| Target path containing `.`/`..` segments, an encoded slash or a backslash | refuse |
 | A bound header name missing from the command text | refuse |
 | Audit record cannot be written | refuse — after the binding check, before the child |
 | Any resolution error in one `--env` while another resolved fine | refuse — nothing is exported and nothing runs |
