@@ -4,6 +4,7 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 import time
 
 # Binary path: env override, else relative to this script (repo/bin/keysmith)
@@ -47,16 +48,34 @@ def main():
     names = [t["name"] for t in r["result"]["tools"]]
     print("tools/list:", names)
 
-    # 4. tools/call put (value via temp file — plaintext never in transcript)
-    with open("/tmp/smcp-e2e-val.txt", "w") as f:
+    # 4. tools/call put — value via a file inside the inbox, so the plaintext
+    # never appears in the transcript. Paths outside the inbox must be refused:
+    # the argument is agent-controlled, so an unrestricted path would let it
+    # read and delete arbitrary files.
+    inbox = os.path.join(STORE, "inbox")
+    os.makedirs(inbox, mode=0o700, exist_ok=True)
+    valfile = os.path.join(inbox, "e2e-value.txt")
+
+    outside = os.path.join(tempfile.gettempdir(), "smcp-e2e-outside.txt")
+    with open(outside, "w") as f:
+        f.write("sk-outside-e2e-1234567890")
+    send(proc, {"jsonrpc": "2.0", "id": 30, "method": "tools/call",
+                "params": {"name": "put", "arguments": {"key": "OUTSIDE", "value_file": outside}}})
+    r = recv(proc)
+    refused = bool((r.get("result") or {}).get("isError")) or "error" in r
+    print("put outside inbox refused:", refused)
+    print("  outside file kept:", os.path.exists(outside))
+    os.remove(outside)
+
+    with open(valfile, "w") as f:
         f.write("sk-super-secret-e2e-1234567890")
     send(proc, {"jsonrpc": "2.0", "id": 3, "method": "tools/call",
-                "params": {"name": "put", "arguments": {"key": "API_KEY", "value_file": "/tmp/smcp-e2e-val.txt"}}})
+                "params": {"name": "put", "arguments": {"key": "API_KEY", "value_file": valfile}}})
     r = recv(proc)
     print("put:", "OK" if r and "result" in r else f"FAIL {r}")
     print("  result:", r["result"]["content"][0]["text"])
-    # temp file should be gone
-    print("  temp file removed:", not os.path.exists("/tmp/smcp-e2e-val.txt"))
+    # value file should be gone
+    print("  value file removed:", not os.path.exists(valfile))
 
     # 5. tools/call list (masked)
     send(proc, {"jsonrpc": "2.0", "id": 4, "method": "tools/call",

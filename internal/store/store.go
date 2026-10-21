@@ -51,6 +51,10 @@ func New(dir string) (*Store, error) {
 // KeyPath returns the path to the secret key file.
 func (s *Store) KeyPath() string { return filepath.Join(s.dir, "key.txt") }
 
+// Dir returns the store directory. Callers that need to place files next to the
+// store (for example the MCP inbox) resolve them against this path.
+func (s *Store) Dir() string { return s.dir }
+
 // DataPath returns the path to the encrypted secrets file.
 func (s *Store) DataPath() string { return filepath.Join(s.dir, "secrets.enc") }
 

@@ -230,6 +230,15 @@ func runCLI(storeDir, vaultAddr string, args []string) error {
 		fmt.Print(leakscan.Format(results))
 		return nil
 
+	case "inbox":
+		// keysmith inbox — print the directory `put` accepts value files from.
+		dir := filepath.Join(storeDir, mcp.InboxDirName)
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			return err
+		}
+		fmt.Println(dir)
+		return nil
+
 	case "vault-kv-get":
 		// keysmith vault-kv-get KEY  (masked by default, --unsafe for plaintext)
 		if len(rest) < 1 {
@@ -380,6 +389,7 @@ USAGE:
   keysmith rotate KEY [len]   # generate + store new strong secret
   keysmith delete KEY         # remove a key
   keysmith scan [--rotate] [repo-dir]  # scan git history for leaked secrets
+  keysmith inbox              # print the directory MCP put accepts value files from
   keysmith token NAME [--ttl 1h] [--allow-host H] [--allow-path P] [--allow-header HN]
                                        # issue a session-bound placeholder token
   keysmith run [--session SID] [--target URL] --env KEY='<template>' -- cmd args...

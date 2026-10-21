@@ -31,7 +31,7 @@ Keysmith fixes this with a **layered security model**:
 |---|---|---|
 | Encrypted residency | age (X25519) encrypted store at rest | Plaintext on disk; even a leaked context is harmless (blobs are ciphertext) |
 | Masked views | resources/tools return `sk******ij` form | Credentials entering agent context |
-| Handle-passing | `put` reads value from a temp file arg, not the transcript | Plaintext in tool-call transcripts |
+| Handle-passing | `put` reads the value from a file in the store inbox, not from the transcript | Plaintext in tool-call transcripts |
 | Self-healing rotation | `scan --rotate` detects leaks, kills the leaked value | Stale leaked credentials keep working |
 | Short-TTL (Vault) | dynamic DB creds expire in 1h | Leaked credentials become worthless |
 | Redemption | `keysmith run` substitutes a token locally, into the child's environment | An agent that must *use* a credential being tempted to print it; plaintext in `argv`, transcripts, or logs |
@@ -106,6 +106,7 @@ keysmith set API_KEY < value.txt     # value from stdin, no shell-history leak
 keysmith rotate API_KEY 32           # generate + store new strong secret
 keysmith delete API_KEY               # remove a key
 keysmith scan [--rotate] [repo-dir]  # scan git history for leaked secrets
+keysmith inbox                       # directory the MCP put tool accepts files from
 keysmith token API_KEY               # issue a session-bound placeholder token
 keysmith token API_KEY --allow-host api.example.test --allow-path /v1/
                                      # ...bound to a destination (see below)
@@ -157,7 +158,7 @@ keysmith -vault http://127.0.0.1:8200 vault-db-creds app-role       # dynamic sh
 |---|---|---|
 | `list` | All keys with masked values | Values never plaintext |
 | `get` | Single key, masked value | Values never plaintext |
-| `put` | Store a secret | Value read from `value_file` arg, temp file auto-removed |
+| `put` | Store a secret | Reads `value_file` from the store inbox only, then deletes it |
 | `rotate` | Generate + store a new strong random secret | Returns masked value only |
 | `delete` | Remove a key | — |
 
@@ -220,10 +221,12 @@ itself, transports decide how agents connect.
 
 - **At rest**: always age-encrypted (X25519), armor format. A plaintext file
   never exists on disk. Atomic writes (temp + rename), `0600` perms.
+- **In transcripts**: `put` never takes the plaintext as an argument — it
+  reads a file path, and only inside the store inbox (`keysmith inbox`); the
+  file is deleted after it is read. A path outside the inbox is refused, so the
+  tool cannot be used as an arbitrary-file read or unlink.
 - **In context**: masked values only. Masking keeps first/last 2 chars
   (`sk******ij`) so credentials are distinguishable without being revealed.
-- **In transcripts**: `put` never takes the plaintext as an argument — it
-  reads a temp file path and deletes the file after.
 - **At use time**: `keysmith run` redeems a session-bound token locally and
   places the value in the child's environment. Values never reach `argv`, the
   audit log, or a model request; every failure aborts before the command starts
@@ -233,6 +236,9 @@ itself, transports decide how agents connect.
 - **Masking rules**: key-name markers (SECRET/TOKEN/PASSWORD/API_KEY/DSN...),
   known value prefixes (sk-, ghp_, glpat-, xoxb-, JWT...), and high-entropy
   alphanumeric runs (≥20 chars mixing letters+digits, Shannon entropy ≥3.5).
+  A sensitive key name forces masking even when the value does not match a
+  value heuristic — a passphrase without digits is still a secret. Plain
+  configuration under a non-sensitive key (DEBUG, PORT) stays readable.
   URL-shaped values are masked per-segment: userinfo password always masked,
   high-entropy path/query runs masked, host/port stay clear. Pure-numeric
   values (timeouts, retries) are never masked.

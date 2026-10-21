@@ -20,8 +20,12 @@ agents that develop it.
 1. `secrets.enc` must never contain plaintext key material (age-encrypted).
 2. `key.txt` must be `0600`, store dir `0700`.
 3. Every MCP tool result and resource must be masked — no plaintext in
-   tool results, ever.
-4. `put` must accept a `value_file` path, read it, and delete it after.
+   tool results, ever. Use `mask.MaskKey`, so a sensitive key name
+   (DB_PASSWORD, GITHUB_TOKEN, ...) masks the value even when the value itself
+   does not match a heuristic.
+4. `put` must accept a `value_file` path **inside `<store>/inbox`**, read it,
+   and delete it after. Paths outside the inbox (including symlinks that
+   resolve outside) are refused: the argument is agent-controlled.
 5. Masking rules live in `internal/mask` — keep the entropy/prefix/URL
    segmentation tests green.
 6. **Redemption fails closed** (`internal/redeem`, docs/THREAT-MODEL.md). On any
