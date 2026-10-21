@@ -47,15 +47,21 @@ KEYSMITH_STORE=/path/to/store keysmith
 リモートエージェント向けに HTTP/SSE で提供します。
 
 ```sh
-keysmith -store ~/.keysmith -http :8080
+keysmith -store ~/.keysmith -http 127.0.0.1:8080
 # endpoint: http://localhost:8080/sse
 ```
 
 MCP 2025 Streamable HTTP で提供します。単一 POST エンドポイントのステートレス方式です。
 
 ```sh
-keysmith -store ~/.keysmith -http :8080 -streamable
+keysmith -store ~/.keysmith -http 127.0.0.1:8080 -streamable
 # endpoint: http://localhost:8080/mcp
+```
+
+HTTP リスナー自体には認証がないため、keysmith は `-http-token` なしで非ループバックアドレスにバインドしません。トークンを指定した場合、すべてのリクエストに `Authorization: Bearer <token>` が必要です。
+
+```sh
+keysmith -store ~/.keysmith -http 192.168.1.10:8080 -http-token "$(openssl rand -hex 16)" -streamable
 ```
 
 HashiCorp Vault をバックエンドとして使用します。短 TTL の動的シークレットに対応します。

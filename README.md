@@ -58,15 +58,23 @@ KEYSMITH_STORE=/path/to/store keysmith
 Serve over HTTP/SSE for remote agents:
 
 ```sh
-keysmith -store ~/.keysmith -http :8080
+keysmith -store ~/.keysmith -http 127.0.0.1:8080
 # endpoint: http://localhost:8080/sse
 ```
 
 Serve MCP 2025 Streamable HTTP (single POST endpoint, stateless):
 
 ```sh
-keysmith -store ~/.keysmith -http :8080 -streamable
+keysmith -store ~/.keysmith -http 127.0.0.1:8080 -streamable
 # endpoint: http://localhost:8080/mcp
+```
+
+An HTTP listener has no authentication of its own, so keysmith refuses to bind
+a non-loopback address unless `-http-token` is set. With a token, every request
+must carry `Authorization: Bearer <token>`:
+
+```sh
+keysmith -store ~/.keysmith -http 192.168.1.10:8080 -http-token "$(openssl rand -hex 16)" -streamable
 ```
 
 Use HashiCorp Vault as the backend (dynamic short-TTL secrets):
