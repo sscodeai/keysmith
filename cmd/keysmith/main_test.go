@@ -1,11 +1,68 @@
 package main
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 )
 
 const token = "[[keysmith:v1:DEMO_KEY:8f3a2b1c]]"
+
+func TestCheckHTTPBindingRequiresAuthOffLoopback(t *testing.T) {
+	cases := []struct {
+		addr, token string
+		wantErr     bool
+	}{
+		{"127.0.0.1:8080", "", false},
+		{"[::1]:8080", "", false},
+		{"localhost:8080", "", false},
+		{":8080", "", true},
+		{"0.0.0.0:8080", "", true},
+		{"192.168.1.10:8080", "", true},
+		{"192.168.1.10:8080", "s3cret", false},
+	}
+	for _, c := range cases {
+		err := checkHTTPBinding(c.addr, c.token)
+		if (err != nil) != c.wantErr {
+			t.Errorf("checkHTTPBinding(%q, %q) = %v, wantErr %v", c.addr, c.token, err, c.wantErr)
+		}
+	}
+}
+
+func TestRequireBearer(t *testing.T) {
+	ok := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})
+	srv := httptest.NewServer(requireBearer(ok, "s3cret"))
+	defer srv.Close()
+
+	do := func(header string) int {
+		req, err := http.NewRequest(http.MethodGet, srv.URL, nil)
+		if err != nil {
+			t.Fatalf("request: %v", err)
+		}
+		if header != "" {
+			req.Header.Set("Authorization", header)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("do: %v", err)
+		}
+		defer resp.Body.Close()
+		return resp.StatusCode
+	}
+
+	if got := do(""); got != http.StatusUnauthorized {
+		t.Errorf("no header: status %d, want 401", got)
+	}
+	if got := do("Bearer wrong"); got != http.StatusUnauthorized {
+		t.Errorf("wrong token: status %d, want 401", got)
+	}
+	if got := do("Bearer s3cret"); got != http.StatusNoContent {
+		t.Errorf("correct token: status %d, want 204", got)
+	}
+}
 
 func TestParseRunArgsSplitsOptionsAndCommand(t *testing.T) {
 	opts, err := parseRunArgs(

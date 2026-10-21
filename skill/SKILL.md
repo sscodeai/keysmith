@@ -29,9 +29,10 @@ Prefer them because they work, not because they are enforced.
 ## Tool usage (via MCP)
 - **`list`** — see all keys with masked values. Use first to orient.
 - **`get <key>`** — read one masked value.
-- **`put <key> <value_file>`** — store a new value. Write the value to a
-  temp file first (`echo -n "$VAL" > /tmp/x`), pass the PATH as `value_file`,
-  and the server deletes the file after. Never pass the value as an argument.
+- **`put <key> <value_file>`** — store a new value. Write the value to a file
+  inside the keysmith inbox (`keysmith inbox`, normally `<store>/inbox`), pass
+  that PATH as `value_file`, and the server deletes it after. Paths outside the
+  inbox are refused. Never pass the value as an argument.
 - **`rotate <key> [length]`** — generate a new strong random value and store
   it. Returns masked.
 - **`delete <key>`** — remove.

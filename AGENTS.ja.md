@@ -15,8 +15,8 @@
 
 1. `secrets.enc` は平文の key material を決して含んではいけません。age で暗号化します。
 2. `key.txt` は `0600`、store dir は `0700` でなければなりません。
-3. すべての MCP tool result と resource はマスク済みでなければなりません。tool result に平文を出してはいけません。
-4. `put` は `value_file` パスを受け取り、それを読み、読み取り後に削除しなければなりません。
+3. すべての MCP tool result と resource はマスク済みでなければなりません。tool result に平文を出してはいけません。`mask.MaskKey` を使い、機密キー名 (DB_PASSWORD, GITHUB_TOKEN...) の場合は値がヒューリスティックに一致しなくてもマスクしてください。
+4. `put` は **`<store>/inbox` 内** の `value_file` パスを受け取り、それを読み、読み取り後に削除しなければなりません。inbox の外のパス (外を指す symlink を含む) は拒否します。引数はエージェントが制御するためです。
 5. マスキング規則は `internal/mask` にあります。entropy/prefix/URL segmentation のテストを green に保ってください。
 6. **redemption は fail-closed です** (`internal/redeem`、docs/THREAT-MODEL.md)。未知のセッション、期限切れセッション、そのセッションで発行されていないキー名、値の欠落または空値、不正な予約プレフィックス、`argv` 内のトークン、audit log の書き込み失敗。いずれの場合もコマンドを起動しません。トークンをそのまま転送するフォールバックも、平文を転送するフォールバックも存在せず、エラーメッセージに値を含めてはいけません。
 7. redemption は `argv` に値を置かず、値も引数リスト全体もログに残しません (`<store>/audit.log` はキー名のみを記録します)。

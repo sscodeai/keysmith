@@ -51,11 +51,25 @@ func TestScanDetectsLeakedSecret(t *testing.T) {
 	found := false
 	for _, r := range results {
 		if strings.Contains(r.Location, "sk-REALLEAKED") {
+			t.Errorf("report repeats the leaked value: %q", r.Location)
+		}
+		if strings.Contains(r.Location, "API_KEY") {
 			found = true
 		}
 	}
 	if !found {
-		t.Errorf("did not find the leaked value in results: %+v", results)
+		t.Errorf("did not report the leaking line: %+v", results)
+	}
+}
+
+func TestFormatDoesNotPrintTheValue(t *testing.T) {
+	results := []ScanResult{{Pattern: "pattern", Location: redactLine("+API_KEY=sk-REAL1234567890")}}
+	out := Format(results)
+	if strings.Contains(out, "REAL1234567890") {
+		t.Errorf("Format repeats the leaked value: %q", out)
+	}
+	if !strings.Contains(out, "API_KEY") {
+		t.Errorf("Format lost the key context: %q", out)
 	}
 }
 

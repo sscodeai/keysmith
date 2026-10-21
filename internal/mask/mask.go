@@ -125,6 +125,36 @@ func Mask(value string) string {
 	return maskPlain(value)
 }
 
+// MaskKey masks a stored value with the key name taken into account.
+//
+// A key name that marks a credential (DB_PASSWORD, GITHUB_TOKEN, ...) forces
+// masking even when the value itself does not match a value heuristic: a
+// passphrase without digits, a DSN, or a short password is still a secret, and
+// value-only heuristics cannot recognise every one. The key name is the one
+// signal the caller always has, so it is applied first.
+func MaskKey(key, value string) string {
+	if value == "" {
+		return ""
+	}
+	if !KeyNameIsSensitive(key) {
+		return Mask(value)
+	}
+	return Redact(value)
+}
+
+// Redact always masks a value, regardless of heuristics. Use it where the
+// caller already knows the text is sensitive — a line matched by the leak
+// scanner, for example — because the value heuristics can miss a passphrase.
+func Redact(value string) string {
+	if value == "" {
+		return ""
+	}
+	if urlSchemeRe.MatchString(value) {
+		return MaskURL(value)
+	}
+	return maskPlain(value)
+}
+
 // MaskURL masks a URL-shaped value per segment: userinfo password always
 // masked, random-looking runs in path/query masked, scheme/user/host/port stay
 // clear.

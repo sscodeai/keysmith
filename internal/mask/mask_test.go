@@ -69,6 +69,37 @@ func TestMask(t *testing.T) {
 	}
 }
 
+func TestMaskKeyUsesTheKeyName(t *testing.T) {
+	cases := []struct {
+		key, val, want string
+	}{
+		// A sensitive key name forces masking even though the value has no
+		// digit and no credential prefix.
+		{"DB_PASSWORD", "correcthorsebatterystaple", "co******le"},
+		{"DB_PASSWORD", "hunter2", "hu******r2"},
+		{"GITHUB_TOKEN", "short", "sh******rt"},
+		// URL values keep their scheme/host but lose the password.
+		{"DB_PASSWORD", "postgres://app:s3cret@db.internal/app", "postgres://app:s3******et@db.internal/app"},
+		// A non-sensitive key keeps plain configuration readable.
+		{"DEBUG", "correcthorsebatterystaple", "correcthorsebatterystaple"},
+		// A URL value is still segment-masked by the value heuristics.
+		{"DATABASE_URL", "postgres://app:s3cret@db.internal/app", "postgres://app:s3******et@db.internal/app"},
+	}
+	for _, c := range cases {
+		if got := MaskKey(c.key, c.val); got != c.want {
+			t.Errorf("MaskKey(%q, %q) = %q, want %q", c.key, c.val, got, c.want)
+		}
+	}
+}
+
+func TestRedactAlwaysMasks(t *testing.T) {
+	for _, v := range []string{"correcthorsebatterystaple", "hunter2", "postgres://u:pass@h/db"} {
+		if got := Redact(v); got == v {
+			t.Errorf("Redact(%q) returned the original value", v)
+		}
+	}
+}
+
 func TestMaskURL(t *testing.T) {
 	cases := []struct {
 		val  string

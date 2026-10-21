@@ -22,6 +22,24 @@ All notable changes to this project are documented here. The format follows
   merging now have unit tests; CI runs `gofmt`, `go vet`, `go test`,
   `e2e_test.py`, `verify_redeem.py` and the doc-parity check on every push.
 
+### Fixed
+- Masking now uses the key name: `DB_PASSWORD=correcthorsebatterystaple` is
+  masked by `get`, `list`, the MCP `get` tool and the MCP resource, instead of
+  being returned verbatim. `KeyNameIsSensitive` had no callers before.
+- `put` only accepts a `value_file` inside `<store>/inbox`; an agent-supplied
+  path outside it was an arbitrary-file read and unlink. `keysmith inbox`
+  prints the directory, and symlink escapes are refused.
+- Store writes take an exclusive lock (`<store>/store.lock`), so the MCP server
+  and the CLI can no longer lose each other's updates (20 concurrent `set`
+  calls used to store 12 keys).
+- `--target` paths containing `.`/`..` segments, encoded slashes or
+  backslashes are refused, closing a `--allow-path` prefix escape such as
+  `/services/../../admin`.
+- An HTTP listener on a non-loopback address requires `-http-token`; requests
+  without a matching `Authorization: Bearer` get 401.
+- `keysmith scan` no longer prints the leaked value itself in its report.
+- `randomSecret` uses rejection sampling instead of a biased modulo.
+
 ## 0.4.0 — 2026-09-14
 
 ### Added

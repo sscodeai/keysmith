@@ -42,14 +42,38 @@ func New(dir string) (*Store, error) {
 		return nil, fmt.Errorf("mkdir %s: %w", dir, err)
 	}
 	s := &Store{dir: dir}
+	// Two processes may initialize the same directory at once (for example an
+	// MCP server and an interactive `keysmith set`). Serialize key creation so
+	// they cannot write two different identities over each other.
+	unlock, err := s.lock()
+	if err != nil {
+		return nil, err
+	}
+	defer unlock()
 	if err := s.ensureKey(); err != nil {
 		return nil, err
 	}
 	return s, nil
 }
 
+// lockPath is the writer lock file next to the encrypted store.
+func (s *Store) lockPath() string { return filepath.Join(s.dir, "store.lock") }
+
+// lock takes the exclusive writer lock. The returned function releases it.
+func (s *Store) lock() (func(), error) {
+	l, err := lockFile(s.lockPath())
+	if err != nil {
+		return nil, fmt.Errorf("lock store: %w", err)
+	}
+	return l.Unlock, nil
+}
+
 // KeyPath returns the path to the secret key file.
 func (s *Store) KeyPath() string { return filepath.Join(s.dir, "key.txt") }
+
+// Dir returns the store directory. Callers that need to place files next to the
+// store (for example the MCP inbox) resolve them against this path.
+func (s *Store) Dir() string { return s.dir }
 
 // DataPath returns the path to the encrypted secrets file.
 func (s *Store) DataPath() string { return filepath.Join(s.dir, "secrets.enc") }
@@ -171,13 +195,25 @@ func (s *Store) writeEncrypted(m map[string]string) error {
 	if err := aw.Close(); err != nil {
 		return fmt.Errorf("armor close: %w", err)
 	}
-	// Atomic write: temp file in same dir, then rename.
-	tmp := s.DataPath() + ".tmp"
-	if err := os.WriteFile(tmp, buf.Bytes(), 0o600); err != nil {
+	// Atomic write: temp file in the same directory, then rename. The name is
+	// unique per write so two writers can never share (and truncate) a temp
+	// file, even if one of them ignores the lock.
+	f, err := os.CreateTemp(s.dir, "secrets.enc.tmp-*")
+	if err != nil {
+		return fmt.Errorf("write temp: %w", err)
+	}
+	tmp := f.Name()
+	if _, err := f.Write(buf.Bytes()); err != nil {
+		_ = f.Close()
+		_ = os.Remove(tmp)
+		return fmt.Errorf("write temp: %w", err)
+	}
+	if err := f.Close(); err != nil {
+		_ = os.Remove(tmp)
 		return fmt.Errorf("write temp: %w", err)
 	}
 	if err := os.Rename(tmp, s.DataPath()); err != nil {
-		os.Remove(tmp)
+		_ = os.Remove(tmp)
 		return fmt.Errorf("rename temp: %w", err)
 	}
 	return nil
@@ -188,6 +224,16 @@ func (s *Store) Set(key, value string) error {
 	if key == "" || strings.ContainsAny(key, " \t\n=") {
 		return fmt.Errorf("invalid key %q", key)
 	}
+	unlock, err := s.lock()
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	return s.setLocked(key, value)
+}
+
+// setLocked performs Set's read-modify-write. The caller must hold the lock.
+func (s *Store) setLocked(key, value string) error {
 	m, err := s.readDecrypted()
 	if err != nil {
 		return err
@@ -219,13 +265,18 @@ func (s *Store) List() (map[string]string, error) {
 	}
 	out := make(map[string]string, len(m))
 	for k, v := range m {
-		out[k] = mask.Mask(v)
+		out[k] = mask.MaskKey(k, v)
 	}
 	return out, nil
 }
 
 // Delete removes a key. Returns ErrNotFound if absent.
 func (s *Store) Delete(key string) error {
+	unlock, err := s.lock()
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	m, err := s.readDecrypted()
 	if err != nil {
 		return err
@@ -248,10 +299,15 @@ func (s *Store) Rotate(key string, length int) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if err := s.Set(key, val); err != nil {
+	unlock, err := s.lock()
+	if err != nil {
 		return "", err
 	}
-	return mask.Mask(val), nil
+	defer unlock()
+	if err := s.setLocked(key, val); err != nil {
+		return "", err
+	}
+	return mask.MaskKey(key, val), nil
 }
 
 // CreatedAt returns the file mtime of the data file (approximate store age).
@@ -279,13 +335,26 @@ func (s *Store) SortedKeys() ([]string, error) {
 
 func randomSecret(n int) (string, error) {
 	const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
-	b := make([]byte, n)
-	rb := make([]byte, n)
-	if _, err := rand.Read(rb); err != nil {
-		return "", err
+	// Rejection sampling: 256 is not a multiple of len(alphabet), so taking a
+	// modulus of every byte would bias the first 8 letters. Bytes above the
+	// largest multiple are discarded instead.
+	const limit = 256 - 256%len(alphabet)
+	out := make([]byte, n)
+	buf := make([]byte, n)
+	for i := 0; i < n; {
+		if _, err := rand.Read(buf); err != nil {
+			return "", err
+		}
+		for _, b := range buf {
+			if int(b) >= limit {
+				continue
+			}
+			out[i] = alphabet[int(b)%len(alphabet)]
+			i++
+			if i == n {
+				break
+			}
+		}
 	}
-	for i := range b {
-		b[i] = alphabet[int(rb[i])%len(alphabet)]
-	}
-	return string(b), nil
+	return string(out), nil
 }

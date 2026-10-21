@@ -20,7 +20,7 @@ Keysmith は、**多層セキュリティモデル**でこれを解決します�
 |---|---|---|
 | 暗号化された保存 | 保存時に age (X25519) で暗号化 | ディスク上の平文。コンテキストに漏れても blob は暗号文なので無害 |
 | マスク済みビュー | resources/tools が `sk******ij` 形式で返す | 認証情報がエージェントのコンテキストに入ること |
-| ハンドル渡し | `put` は transcript ではなく一時ファイル引数から値を読む | ツール呼び出し transcript 内の平文 |
+| ハンドル渡し | `put` は transcript ではなくストアの inbox にあるファイルから値を読む | ツール呼び出し transcript 内の平文 |
 | 自己修復ローテーション | `scan --rotate` が漏えいを検出し、漏れた値を無効化 | 古い漏えい済み認証情報が使われ続けること |
 | 短 TTL (Vault) | 動的 DB 認証情報は 1 時間で期限切れ | 漏えいした認証情報の価値が残ること |
 | Redemption | `keysmith run` がトークンをローカルで差し替え、子プロセスの環境変数へ渡す | 認証情報を「使う」必要があるエージェントが平文を出力してしまうこと。`argv`、transcript、ログ内の平文 |
@@ -47,15 +47,21 @@ KEYSMITH_STORE=/path/to/store keysmith
 リモートエージェント向けに HTTP/SSE で提供します。
 
 ```sh
-keysmith -store ~/.keysmith -http :8080
+keysmith -store ~/.keysmith -http 127.0.0.1:8080
 # endpoint: http://localhost:8080/sse
 ```
 
 MCP 2025 Streamable HTTP で提供します。単一 POST エンドポイントのステートレス方式です。
 
 ```sh
-keysmith -store ~/.keysmith -http :8080 -streamable
+keysmith -store ~/.keysmith -http 127.0.0.1:8080 -streamable
 # endpoint: http://localhost:8080/mcp
+```
+
+HTTP リスナー自体には認証がないため、keysmith は `-http-token` なしで非ループバックアドレスにバインドしません。トークンを指定した場合、すべてのリクエストに `Authorization: Bearer <token>` が必要です。
+
+```sh
+keysmith -store ~/.keysmith -http 192.168.1.10:8080 -http-token "$(openssl rand -hex 16)" -streamable
 ```
 
 HashiCorp Vault をバックエンドとして使用します。短 TTL の動的シークレットに対応します。
@@ -95,6 +101,7 @@ keysmith set API_KEY < value.txt     # stdin から値を読み、shell history 
 keysmith rotate API_KEY 32           # 強力な新しいシークレットを生成して保存
 keysmith delete API_KEY              # キーを削除
 keysmith scan [--rotate] [repo-dir]  # git 履歴から漏えいしたシークレットをスキャン
+keysmith inbox                       # MCP の put が値ファイルを受け取るディレクトリ
 keysmith token API_KEY               # セッションに紐づくプレースホルダートークンを発行
 keysmith token API_KEY --allow-host api.example.test --allow-path /v1/
                                      # ...宛先に結合する（下記参照）
@@ -134,7 +141,7 @@ keysmith -vault http://127.0.0.1:8200 vault-db-creds app-role       # 短 TTL �
 |---|---|---|
 | `list` | すべてのキーとマスク済み値 | 値は平文にならない |
 | `get` | 1 つのキーのマスク済み値 | 値は平文にならない |
-| `put` | シークレットを保存 | 値は `value_file` 引数から読み、一時ファイルは自動削除 |
+| `put` | シークレットを保存 | `value_file` はストアの inbox 内のみ受け付け、読み取り後に削除 |
 | `rotate` | 強力なランダムシークレットを生成して保存 | マスク済み値のみを返す |
 | `delete` | キーを削除 | - |
 
@@ -192,9 +199,9 @@ flowchart TB
 
 - **保存時**: 常に age (X25519) で暗号化され、armor 形式です。平文ファイルはディスク上に存在しません。atomic write (temp + rename) と `0600` 権限を使います。
 - **コンテキスト内**: マスク済み値のみです。マスキングは先頭/末尾 2 文字を残し (`sk******ij`)、認証情報を識別できるが露出しない形にします。
-- **Transcript 内**: `put` は平文を引数として受け取りません。一時ファイルパスを読み、読み取り後にファイルを削除します。
+- **Transcript 内**: `put` は平文を引数として受け取りません。ファイルパスを読み、ストアの inbox (`keysmith inbox`) 内のパスのみ受け付け、読み取り後にファイルを削除します。inbox の外は拒否されるため、任意ファイルの読み取りや削除には使えません。
 - **使用時**: `keysmith run` はセッションに紐づくトークンをローカルで解決し、値を子プロセスの環境変数へ渡します。値は `argv`、audit log、モデルへのリクエストに到達しません。失敗時はコマンド起動前に中止し、平文フォールバックもトークンのそのまま転送も行いません。結合済みトークンは `--target` も満たす必要があり、宣言された宛先は audit 行に記録されます。
-- **マスキング規則**: キー名マーカー (SECRET/TOKEN/PASSWORD/API_KEY/DSN...)、既知の値プレフィックス (sk-, ghp_, glpat-, xoxb-, JWT...)、高エントロピーな英数字列 (英字と数字が混在する 20 文字以上、Shannon entropy 3.5 以上) を使います。URL 形状の値はセグメントごとにマスクされます。userinfo のパスワードは常にマスクされ、高エントロピーな path/query はマスクされ、host/port は残ります。timeout や retry などの純数字値はマスクされません。
+- **マスキング規則**: キー名マーカー (SECRET/TOKEN/PASSWORD/API_KEY/DSN...)、既知の値プレフィックス (sk-, ghp_, glpat-, xoxb-, JWT...)、高エントロピーな英数字列 (英字と数字が混在する 20 文字以上、Shannon entropy 3.5 以上) を使います。キー名が認証情報を示す場合は、値がヒューリスティックに一致しなくても必ずマスクします (数字を含まないパスフレーズもシークレットです)。機密でないキー (DEBUG, PORT) の設定値はそのまま読めます。URL 形状の値はセグメントごとにマスクされます。userinfo のパスワードは常にマスクされ、高エントロピーな path/query はマスクされ、host/port は残ります。timeout や retry などの純数字値はマスクされません。
 
 ## 開発
 

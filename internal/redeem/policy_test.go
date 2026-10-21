@@ -9,11 +9,12 @@ import (
 
 func TestParseTargetAcceptsExpectedURLs(t *testing.T) {
 	ok := map[string]Target{
-		"https://api.example.test/v1/me": {Host: "api.example.test", Path: "/v1/me", Secure: true},
-		"https://API.Example.Test":       {Host: "api.example.test", Path: "/", Secure: true},
-		"http://127.0.0.1:8080/v1/x":     {Host: "127.0.0.1", Port: "8080", Path: "/v1/x"},
-		"http://localhost:11434/api":     {Host: "localhost", Port: "11434", Path: "/api"},
-		"http://[::1]:9000/ping":         {Host: "::1", Port: "9000", Path: "/ping"},
+		"https://api.example.test/v1/me":                            {Host: "api.example.test", Path: "/v1/me", Secure: true},
+		"https://API.Example.Test":                                  {Host: "api.example.test", Path: "/", Secure: true},
+		"http://127.0.0.1:8080/v1/x":                                {Host: "127.0.0.1", Port: "8080", Path: "/v1/x"},
+		"http://localhost:11434/api":                                {Host: "localhost", Port: "11434", Path: "/api"},
+		"http://[::1]:9000/ping":                                    {Host: "::1", Port: "9000", Path: "/ping"},
+		"https://api.example.test/.well-known/openid-configuration": {Host: "api.example.test", Path: "/.well-known/openid-configuration", Secure: true},
 	}
 	for raw, want := range ok {
 		got, err := ParseTarget(raw)
@@ -34,6 +35,14 @@ func TestParseTargetRefusesUnsafeURLs(t *testing.T) {
 		"http://api.example.test/x",       // plain http to a remote host
 		"https://api.example.test/v1?k=v", // query string (a place to hide a destination)
 		"https://api.example.test/v1#frag",
+		// A path prefix on /services/ must not be escapable by segments the
+		// destination will resolve elsewhere.
+		"https://hooks.slack.com/services/../admin",
+		"https://hooks.slack.com/services/..;/admin",
+		"https://hooks.slack.com/services/%2e%2e/admin",
+		"https://hooks.slack.com/services%2f..%2fadmin",
+		"https://hooks.slack.com/a/./b",
+		"https://hooks.slack.com/a%5cb",
 	}
 	for _, raw := range bad {
 		if _, err := ParseTarget(raw); err == nil {

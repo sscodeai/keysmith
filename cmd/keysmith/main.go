@@ -20,11 +20,13 @@ package main
 
 import (
 	"context"
+	"crypto/subtle"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -46,6 +48,7 @@ var version = "0.5.0"
 func main() {
 	storeDir := flag.String("store", defaultStoreDir(), "directory holding age-encrypted secrets (key.txt + secrets.enc)")
 	httpAddr := flag.String("http", "", "serve MCP over HTTP/SSE on this address (e.g. :8080) instead of stdio")
+	httpToken := flag.String("http-token", "", "require this bearer token on every HTTP request (required when -http binds a non-loopback address)")
 	streamable := flag.Bool("streamable", false, "with -http: use Streamable HTTP (MCP 2025) instead of SSE")
 	vaultAddr := flag.String("vault", "", "HashiCorp Vault address (e.g. http://127.0.0.1:8200) — use Vault as backend")
 	showVer := flag.Bool("version", false, "print version and exit")
@@ -60,7 +63,7 @@ func main() {
 
 	// No subcommand → MCP server mode (stdio or HTTP/SSE).
 	if len(args) == 0 {
-		runMCPServer(*storeDir, *httpAddr, *vaultAddr, *streamable)
+		runMCPServer(*storeDir, *httpAddr, *vaultAddr, *httpToken, *streamable)
 		return
 	}
 
@@ -70,7 +73,7 @@ func main() {
 	}
 }
 
-func runMCPServer(storeDir, httpAddr, vaultAddr string, streamable bool) {
+func runMCPServer(storeDir, httpAddr, vaultAddr, httpToken string, streamable bool) {
 	st, err := store.New(storeDir)
 	if err != nil {
 		log.Fatalf("store init: %v", err)
@@ -84,6 +87,9 @@ func runMCPServer(storeDir, httpAddr, vaultAddr string, streamable bool) {
 	// Default = SSE transport (GET /sse + POST endpoint).
 	// With -streamable = MCP 2025 Streamable HTTP (single POST endpoint, JSON).
 	if httpAddr != "" {
+		if err := checkHTTPBinding(httpAddr, httpToken); err != nil {
+			log.Fatalf("http: %v", err)
+		}
 		var handler http.Handler
 		if streamable {
 			handler = sdk.NewStreamableHTTPHandler(func(*http.Request) *sdk.Server { return srv.Handler() },
@@ -94,6 +100,10 @@ func runMCPServer(storeDir, httpAddr, vaultAddr string, streamable bool) {
 			handler = sdk.NewSSEHandler(func(*http.Request) *sdk.Server { return srv.Handler() }, nil)
 			log.Printf("keysmith serving MCP over SSE on %s", httpAddr)
 			log.Printf("  endpoint: http://localhost%s/sse", httpAddr)
+		}
+		if httpToken != "" {
+			handler = requireBearer(handler, httpToken)
+			log.Printf("  authentication: Authorization: Bearer <token> is required")
 		}
 		if err := http.ListenAndServe(httpAddr, handler); err != nil {
 			log.Fatalf("http server: %v", err)
@@ -157,7 +167,7 @@ func runCLI(storeDir, vaultAddr string, args []string) error {
 		if unsafe {
 			fmt.Println(val)
 		} else {
-			fmt.Println(mask.Mask(val))
+			fmt.Println(mask.MaskKey(key, val))
 		}
 		return nil
 
@@ -179,7 +189,7 @@ func runCLI(storeDir, vaultAddr string, args []string) error {
 		if err := st.Set(key, value); err != nil {
 			return err
 		}
-		fmt.Printf("stored %s (masked: %s)\n", key, mask.Mask(value))
+		fmt.Printf("stored %s (masked: %s)\n", key, mask.MaskKey(key, value))
 		return nil
 
 	case "rotate":
@@ -230,6 +240,15 @@ func runCLI(storeDir, vaultAddr string, args []string) error {
 		fmt.Print(leakscan.Format(results))
 		return nil
 
+	case "inbox":
+		// keysmith inbox — print the directory `put` accepts value files from.
+		dir := filepath.Join(storeDir, mcp.InboxDirName)
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			return err
+		}
+		fmt.Println(dir)
+		return nil
+
 	case "vault-kv-get":
 		// keysmith vault-kv-get KEY  (masked by default, --unsafe for plaintext)
 		if len(rest) < 1 {
@@ -246,7 +265,7 @@ func runCLI(storeDir, vaultAddr string, args []string) error {
 		if containsFlag(rest, "--unsafe") {
 			fmt.Println(val)
 		} else {
-			fmt.Println(mask.Mask(val))
+			fmt.Println(mask.MaskKey(rest[0], val))
 		}
 		return nil
 
@@ -271,7 +290,7 @@ func runCLI(storeDir, vaultAddr string, args []string) error {
 		if err := vc.SetKV(context.Background(), rest[0], value); err != nil {
 			return err
 		}
-		fmt.Printf("stored %s in vault (masked: %s)\n", rest[0], mask.Mask(value))
+		fmt.Printf("stored %s in vault (masked: %s)\n", rest[0], mask.MaskKey(rest[0], value))
 		return nil
 
 	case "vault-kv-list":
@@ -302,7 +321,7 @@ func runCLI(storeDir, vaultAddr string, args []string) error {
 			return err
 		}
 		fmt.Printf("username: %s\n", creds.Username)
-		fmt.Printf("password: %s (masked)\n", mask.Mask(creds.Password))
+		fmt.Printf("password: %s (masked)\n", mask.MaskKey("DB_PASSWORD", creds.Password))
 		fmt.Printf("lease_id: %s\n", creds.LeaseID)
 		fmt.Printf("ttl: %ds (auto-expires — leaked cred is harmless)\n", creds.LeaseTTL)
 		fmt.Printf("renewable: %v\n", creds.Renewable)
@@ -380,6 +399,7 @@ USAGE:
   keysmith rotate KEY [len]   # generate + store new strong secret
   keysmith delete KEY         # remove a key
   keysmith scan [--rotate] [repo-dir]  # scan git history for leaked secrets
+  keysmith inbox              # print the directory MCP put accepts value files from
   keysmith token NAME [--ttl 1h] [--allow-host H] [--allow-path P] [--allow-header HN]
                                        # issue a session-bound placeholder token
   keysmith run [--session SID] [--target URL] --env KEY='<template>' -- cmd args...
@@ -388,6 +408,8 @@ USAGE:
 
 FLAGS:
   -store DIR   store directory (default ~/.keysmith or $KEYSMITH_STORE)
+  -http ADDR   serve MCP over HTTP (SSE) instead of stdio
+  -http-token  require Authorization: Bearer <token> on every HTTP request
 
 SECURITY:
   - set reads the value from stdin — never pass secrets as arguments
@@ -398,6 +420,8 @@ SECURITY:
   - redemption fails closed: any error aborts the command, with no fallback
   - --allow-host/--allow-path/--allow-header bind a token to a destination;
     run --target must match, or the command is not started
+  - a non-loopback -http bind requires -http-token; unauthenticated requests
+    are answered with 401 instead of reaching the store
   - secrets are stored age-encrypted at rest (key.txt 0600, secrets.enc armor)
 `
 }
@@ -705,6 +729,45 @@ func mergeEnv(base, overrides []string) []string {
 		out = append(out, e)
 	}
 	return append(out, overrides...)
+}
+
+// checkHTTPBinding refuses to expose the MCP server on a non-loopback address
+// without a bearer token. There is no other authentication and the tools are
+// destructive (delete, rotate) as well as data-bearing, so an unauthenticated
+// LAN listener is not a safe default.
+func checkHTTPBinding(addr, token string) error {
+	if isLoopbackListen(addr) || token != "" {
+		return nil
+	}
+	return fmt.Errorf("refusing to serve MCP on non-loopback %q without -http-token: "+
+		"bind 127.0.0.1, or pass -http-token and send Authorization: Bearer <token>", addr)
+}
+
+// isLoopbackListen reports whether addr binds only a loopback interface. An
+// empty host (":8080") binds every interface and is not loopback.
+func isLoopbackListen(addr string) bool {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return false
+	}
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
+// requireBearer wraps an MCP handler with a constant-time bearer check.
+func requireBearer(next http.Handler, token string) http.Handler {
+	want := []byte("Bearer " + token)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if subtle.ConstantTimeCompare([]byte(r.Header.Get("Authorization")), want) != 1 {
+			w.Header().Set("WWW-Authenticate", `Bearer realm="keysmith"`)
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 func validEnvName(s string) bool {

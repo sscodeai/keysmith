@@ -2,9 +2,11 @@ package store
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -83,6 +85,67 @@ func TestListIsMasked(t *testing.T) {
 	// Non-secret stays clear.
 	if v := items["DEBUG"]; v != "true" {
 		t.Errorf("List DEBUG = %q, want true", v)
+	}
+}
+
+func TestListMasksSensitiveKeyNames(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.Set("DB_PASSWORD", "correcthorsebatterystaple"); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	items, err := s.List()
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if v := items["DB_PASSWORD"]; v == "correcthorsebatterystaple" {
+		t.Errorf("List leaked a passphrase for a sensitive key name: %q", v)
+	}
+}
+
+func TestConcurrentSetKeepsEveryKey(t *testing.T) {
+	s := newTestStore(t)
+	const n = 16
+	var wg sync.WaitGroup
+	errs := make(chan error, n)
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			if err := s.Set(fmt.Sprintf("K%02d", i), fmt.Sprintf("value-%02d-abcdefghij", i)); err != nil {
+				errs <- err
+			}
+		}(i)
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Fatalf("Set: %v", err)
+	}
+	keys, err := s.SortedKeys()
+	if err != nil {
+		t.Fatalf("SortedKeys: %v", err)
+	}
+	if len(keys) != n {
+		t.Fatalf("stored %d keys, want %d — a write was lost", len(keys), n)
+	}
+}
+
+func TestRandomSecretUsesTheWholeAlphabet(t *testing.T) {
+	seen := map[rune]bool{}
+	for i := 0; i < 40; i++ {
+		v, err := randomSecret(64)
+		if err != nil {
+			t.Fatalf("randomSecret: %v", err)
+		}
+		if len(v) != 64 {
+			t.Fatalf("length = %d, want 64", len(v))
+		}
+		for _, r := range v {
+			seen[r] = true
+		}
+	}
+	if len(seen) != 62 {
+		t.Errorf("saw %d distinct characters, want 62", len(seen))
 	}
 }
 

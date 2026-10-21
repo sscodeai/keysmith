@@ -26,16 +26,30 @@ import (
 // Server wraps a secret store as an MCP server.
 type Server struct {
 	store *store.Store
+	inbox string
 	mcp   *mcp.Server
 }
 
+// InboxDirName is the directory, next to the encrypted store, where `put` reads
+// value files from. Agents are told about it (`keysmith inbox`); anything
+// outside it is refused by readValueFile.
+const InboxDirName = "inbox"
+
 // NewServer creates an MCP server backed by the given store. version is what
 // clients see as serverInfo.version; an empty value is reported as "dev".
+//
+// The inbox directory is created with 0700 because `put` will only read (and
+// then delete) value files inside it: the tool argument is agent-controlled, so
+// an unrestricted path would be an arbitrary-file read and unlink primitive.
 func NewServer(st *store.Store, version string) (*Server, error) {
 	if version == "" {
 		version = "dev"
 	}
-	s := &Server{store: st}
+	inbox := filepath.Join(st.Dir(), InboxDirName)
+	if err := os.MkdirAll(inbox, 0o700); err != nil {
+		return nil, fmt.Errorf("create inbox: %w", err)
+	}
+	s := &Server{store: st, inbox: inbox}
 	srv := mcp.NewServer(&mcp.Implementation{
 		Name:    "keysmith",
 		Version: version,
@@ -117,23 +131,25 @@ func NewServer(st *store.Store, version string) (*Server, error) {
 			}
 			return nil, nil, fmt.Errorf("get %q: %w", args.Key, err)
 		}
-		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: mask.Mask(v)}}}, nil, nil
+		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: mask.MaskKey(args.Key, v)}}}, nil, nil
 	})
 
 	// put: set a secret. Value is read from a temp file path arg, so the
 	// plaintext never appears in the tool call transcript.
 	type putArgs struct {
 		Key       string `json:"key" jsonschema:"the secret key name"`
-		ValueFile string `json:"value_file" jsonschema:"path to a file containing the value (keeps plaintext out of the transcript)"`
+		ValueFile string `json:"value_file" jsonschema:"path to a file inside the keysmith inbox containing the value (keeps plaintext out of the transcript)"`
 	}
 	mcp.AddTool(srv, &mcp.Tool{
-		Name:        "put",
-		Description: "Store a secret. Pass value_file (a path to a file containing the value) to avoid putting plaintext in the transcript.",
+		Name: "put",
+		Description: "Store a secret. Write the value to a file inside the keysmith inbox " +
+			"(run `keysmith inbox` for the path), then pass that path as value_file: paths " +
+			"outside the inbox are refused, and the file is deleted after it is read.",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, args putArgs) (*mcp.CallToolResult, any, error) {
 		if args.Key == "" {
 			return nil, nil, errors.New("key is required")
 		}
-		val, err := readValueFile(args.ValueFile)
+		val, err := readValueFile(s.inbox, args.ValueFile)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -200,22 +216,50 @@ func (s *Server) Handler() *mcp.Server {
 	return s.mcp
 }
 
-// readValueFile reads a secret value from a file (single line, trailing newline
-// stripped). The file is removed after reading to avoid leaving plaintext.
-func readValueFile(path string) (string, error) {
-	if path == "" {
-		return "", errors.New("value_file is required (write the value to a temp file first)")
+// readValueFile reads a secret value from a file inside inbox (single line,
+// trailing newline stripped) and removes it after reading, so plaintext does
+// not linger. Paths outside the inbox are refused: the MCP caller chooses this
+// path, and reading + unlinking an arbitrary file would be a destructive
+// primitive (for example value_file: "~/.ssh/id_ed25519").
+func readValueFile(inbox, path string) (string, error) {
+	inside, err := resolveInside(inbox, path)
+	if err != nil {
+		return "", err
 	}
-	b, err := os.ReadFile(path)
+	b, err := os.ReadFile(inside)
 	if err != nil {
 		return "", fmt.Errorf("read value file: %w", err)
 	}
 	val := strings.TrimSuffix(string(b), "\n")
 	val = strings.TrimSuffix(val, "\r")
-	// Best-effort cleanup: remove the temp file so plaintext doesn't linger.
-	abs, aerr := filepath.Abs(path)
-	if aerr == nil {
-		_ = os.Remove(abs)
-	}
+	// Remove the file now that the value is in memory.
+	_ = os.Remove(inside)
 	return val, nil
+}
+
+// resolveInside returns path if it resolves, after following symlinks, to a
+// regular file inside dir. Anything else — a relative escape, an absolute path
+// elsewhere, or a symlink pointing out of dir — is refused.
+func resolveInside(dir, path string) (string, error) {
+	if strings.TrimSpace(path) == "" {
+		return "", fmt.Errorf("value_file is required: write the value to %s and pass that path", dir)
+	}
+	root, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		return "", fmt.Errorf("resolve inbox: %w", err)
+	}
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return "", fmt.Errorf("resolve value file: %w", err)
+	}
+	resolved, err := filepath.EvalSymlinks(abs)
+	if err != nil {
+		return "", fmt.Errorf("read value file: %w", err)
+	}
+	rel, err := filepath.Rel(root, resolved)
+	if err != nil || rel == "." || rel == ".." ||
+		filepath.IsAbs(rel) || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
+		return "", fmt.Errorf("value_file must be inside the keysmith inbox (%s); run `keysmith inbox` for the path", dir)
+	}
+	return resolved, nil
 }
