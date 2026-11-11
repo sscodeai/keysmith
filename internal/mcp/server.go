@@ -156,7 +156,7 @@ func NewServer(st *store.Store, version string) (*Server, error) {
 		if err := st.Set(args.Key, val); err != nil {
 			return nil, nil, fmt.Errorf("set %q: %w", args.Key, err)
 		}
-		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: fmt.Sprintf("stored %s (masked: %s)", args.Key, mask.Mask(val))}}}, nil, nil
+		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: fmt.Sprintf("stored %s (masked: %s)", args.Key, mask.MaskKey(args.Key, val))}}}, nil, nil
 	})
 
 	// rotate: generate a new strong secret for key, return masked

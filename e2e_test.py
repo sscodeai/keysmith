@@ -77,12 +77,27 @@ def main():
     # value file should be gone
     print("  value file removed:", not os.path.exists(valfile))
 
+    # 4b. put must mask by key name even when the value itself does not look
+    # like a secret. "hunter2" has no prefix/high-entropy shape; only the
+    # sensitive key name (DB_PASSWORD) tells us the result must be masked.
+    with open(valfile, "w") as f:
+        f.write("hunter2")
+    send(proc, {"jsonrpc": "2.0", "id": 31, "method": "tools/call",
+                "params": {"name": "put", "arguments": {"key": "DB_PASSWORD", "value_file": valfile}}})
+    r = recv(proc)
+    put_text = r["result"]["content"][0]["text"]
+    print("put sensitive:", put_text)
+    assert "hunter2" not in put_text, "PUT LEAK!"
+    print("  value file removed:", not os.path.exists(valfile))
+
     # 5. tools/call list (masked)
     send(proc, {"jsonrpc": "2.0", "id": 4, "method": "tools/call",
                 "params": {"name": "list", "arguments": {}}})
     r = recv(proc)
-    print("list:", r["result"]["content"][0]["text"].strip())
-    assert "sk-super-secret-e2e-1234567890" not in r["result"]["content"][0]["text"], "LEAK!"
+    list_text = r["result"]["content"][0]["text"]
+    print("list:", list_text.strip())
+    assert "sk-super-secret-e2e-1234567890" not in list_text, "LEAK!"
+    assert "hunter2" not in list_text, "LIST LEAK!"
 
     # 6. tools/call get (masked)
     send(proc, {"jsonrpc": "2.0", "id": 5, "method": "tools/call",
@@ -106,6 +121,7 @@ def main():
     text = r["result"]["contents"][0]["text"]
     print("resources/read:", text.strip())
     assert "sk-super-secret-e2e-1234567890" not in text, "RESOURCE LEAK!"
+    assert "hunter2" not in text, "RESOURCE LEAK!"
 
     proc.terminate()
     print("\n✅ E2E PASS — no plaintext leaked in any tool/resource output")
