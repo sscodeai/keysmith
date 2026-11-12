@@ -64,6 +64,14 @@ HTTP リスナー自体には認証がないため、keysmith は `-http-token` 
 keysmith -store ~/.keysmith -http 192.168.1.10:8080 -http-token "$(openssl rand -hex 16)" -streamable
 ```
 
+`-http` 単体は平文です。ベアラートークンとすべての MCP リクエストが暗号化されずに流れます。非ループバックで公開する場合は、組み込みの TLS フラグかリバースプロキシで TLS を終端してください。
+
+```sh
+keysmith -store ~/.keysmith -http 0.0.0.0:8080 \
+  -http-token "$(openssl rand -hex 16)" \
+  -http-tls-cert server.crt -http-tls-key server.key
+```
+
 HashiCorp Vault をバックエンドとして使用します。短 TTL の動的シークレットに対応します。
 
 ```sh

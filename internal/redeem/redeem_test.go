@@ -2,9 +2,11 @@ package redeem
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -326,5 +328,55 @@ func TestSessionFilesArePrivate(t *testing.T) {
 		if info.Mode().Perm() != 0o600 {
 			t.Fatalf("%s must be 0600, got %v", e.Name(), info.Mode().Perm())
 		}
+	}
+}
+
+func TestIssueBoundSerializesConcurrentWriters(t *testing.T) {
+	sessions := NewSessions(t.TempDir())
+	const n = 16
+
+	var wg sync.WaitGroup
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			if _, err := sessions.IssueBound(fmt.Sprintf("KEY_%d", i), time.Minute, Binding{}); err != nil {
+				t.Errorf("IssueBound(KEY_%d): %v", i, err)
+			}
+		}(i)
+	}
+	wg.Wait()
+
+	sess, err := sessions.Current()
+	if err != nil {
+		t.Fatalf("Current: %v", err)
+	}
+	if len(sess.Names) != n {
+		t.Fatalf("session has %d names, want %d", len(sess.Names), n)
+	}
+	for i := 0; i < n; i++ {
+		want := fmt.Sprintf("KEY_%d", i)
+		if !sess.HasName(want) {
+			t.Errorf("session is missing %s", want)
+		}
+	}
+}
+
+func TestSessionOfRejectsMixedSessions(t *testing.T) {
+	a := &Session{ID: "aaaaaaaaaaaaaaaa"}
+	b := &Session{ID: "bbbbbbbbbbbbbbbb"}
+
+	got, err := SessionOf([]Resolved{{Name: "A", Session: a}, {Name: "B", Session: a}})
+	if err != nil || got != a {
+		t.Fatalf("SessionOf(same) = %v, %v; want %v, nil", got, err, a)
+	}
+	if _, err := SessionOf([]Resolved{{Name: "A", Session: a}, {Name: "B", Session: b}}); !errors.Is(err, ErrMixedSessions) {
+		t.Fatalf("mixed sessions: got %v, want ErrMixedSessions", err)
+	}
+	if _, err := SessionOf([]Resolved{{Name: "A", Session: a}, {Name: "B"}}); !errors.Is(err, ErrSessionUnknown) {
+		t.Fatalf("missing session: got %v, want ErrSessionUnknown", err)
+	}
+	if got, err := SessionOf(nil); err != nil || got != nil {
+		t.Fatalf("SessionOf(nil) = %v, %v; want nil, nil", got, err)
 	}
 }

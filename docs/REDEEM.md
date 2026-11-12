@@ -53,6 +53,9 @@ TOKEN=$(keysmith token DEMO_KEY --ttl 15m)
   the encrypted store.
 - Replay is bounded by the session: a token copied out of an old transcript, a
   committed file, or a previous session is refused.
+- All tokens in one `run` must come from the same session. The audit record and
+  target-binding check are per-session, so a mix is refused rather than checked
+  against the wrong session's bindings.
 
 ## `keysmith run`
 

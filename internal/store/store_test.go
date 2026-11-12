@@ -44,6 +44,74 @@ func TestNewCreatesEncryptedFiles(t *testing.T) {
 	}
 }
 
+func TestNewSecuresExistingPermissions(t *testing.T) {
+	dir := t.TempDir()
+	s, err := New(dir)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := os.Chmod(dir, 0o755); err != nil {
+		t.Fatalf("chmod dir: %v", err)
+	}
+	if err := os.Chmod(s.KeyPath(), 0o644); err != nil {
+		t.Fatalf("chmod key: %v", err)
+	}
+	if err := os.Chmod(s.DataPath(), 0o644); err != nil {
+		t.Fatalf("chmod data: %v", err)
+	}
+
+	if _, err := New(dir); err != nil {
+		t.Fatalf("New after loose permissions: %v", err)
+	}
+	for _, c := range []struct {
+		name string
+		path string
+		want os.FileMode
+	}{
+		{"store dir", dir, 0o700},
+		{"key file", s.KeyPath(), 0o600},
+		{"data file", s.DataPath(), 0o600},
+	} {
+		fi, err := os.Stat(c.path)
+		if err != nil {
+			t.Fatalf("%s: %v", c.name, err)
+		}
+		if fi.Mode().Perm() != c.want {
+			t.Errorf("%s perms = %o, want %o", c.name, fi.Mode().Perm(), c.want)
+		}
+	}
+}
+
+func TestNewRefusesLooseNonEmptyDir(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.Chmod(dir, 0o755); err != nil {
+		t.Fatalf("chmod: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "unrelated.txt"), []byte("x"), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if _, err := New(dir); err == nil {
+		t.Fatal("New accepted a world-readable non-empty directory that was not an existing store")
+	}
+}
+
+func TestNewSecuresEmptyLooseDir(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.Chmod(dir, 0o755); err != nil {
+		t.Fatalf("chmod: %v", err)
+	}
+	if _, err := New(dir); err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	fi, err := os.Stat(dir)
+	if err != nil {
+		t.Fatalf("stat: %v", err)
+	}
+	if fi.Mode().Perm() != 0o700 {
+		t.Errorf("store dir perms = %o, want 700", fi.Mode().Perm())
+	}
+}
+
 func TestSetGet(t *testing.T) {
 	s := newTestStore(t)
 	if err := s.Set("API_KEY", "sk-test1234567890"); err != nil {
@@ -184,6 +252,13 @@ func TestRotate(t *testing.T) {
 	}
 	if strings.Contains(masked, got[2:len(got)-2]) {
 		t.Error("Rotate returned unmasked value")
+	}
+}
+
+func TestRotateRejectsOversizedLength(t *testing.T) {
+	s := newTestStore(t)
+	if _, err := s.Rotate("TOKEN", MaxSecretLength+1); err == nil {
+		t.Fatalf("Rotate(%d) = nil error, want refusal", MaxSecretLength+1)
 	}
 }
 

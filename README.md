@@ -77,6 +77,16 @@ must carry `Authorization: Bearer <token>`:
 keysmith -store ~/.keysmith -http 192.168.1.10:8080 -http-token "$(openssl rand -hex 16)" -streamable
 ```
 
+Plain `-http` is cleartext: the bearer token and every MCP request travel
+unencrypted. For a non-loopback listener, terminate TLS with the built-in flags
+or a reverse proxy:
+
+```sh
+keysmith -store ~/.keysmith -http 0.0.0.0:8080 \
+  -http-token "$(openssl rand -hex 16)" \
+  -http-tls-cert server.crt -http-tls-key server.key
+```
+
 Use HashiCorp Vault as the backend (dynamic short-TTL secrets):
 
 ```sh

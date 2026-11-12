@@ -36,12 +36,38 @@ type Store struct {
 // ErrNotFound is returned when a key does not exist.
 var ErrNotFound = errors.New("secret not found")
 
+// MaxSecretLength bounds generated secrets. It is far above any real
+// credential, but keeps an agent-supplied length from allocating an
+// unbounded buffer.
+const MaxSecretLength = 4096
+
 // New creates a Store rooted at dir, initializing the age keypair if absent.
 func New(dir string) (*Store, error) {
+	s := &Store{dir: dir}
+	// Do not chmod an arbitrary existing directory. If it already holds store
+	// files it is our data directory and can be tightened; a brand-new store in
+	// a group/world-readable directory must be fixed by the user first (-store
+	// . or -store /tmp must not silently change that directory's mode).
+	if fi, err := os.Stat(dir); err == nil {
+		if fi.Mode().Perm()&0o077 != 0 && !fileExists(s.KeyPath()) && !fileExists(s.DataPath()) {
+			entries, readErr := os.ReadDir(dir)
+			if readErr != nil {
+				return nil, fmt.Errorf("read store dir: %w", readErr)
+			}
+			// An empty directory is safe to tighten. A non-empty directory
+			// that is not already a store may be the user's project or /tmp:
+			// refuse rather than silently changing its mode.
+			if len(entries) > 0 {
+				return nil, fmt.Errorf("store directory %s has mode %o: chmod 700 it or choose a new directory",
+					dir, fi.Mode().Perm())
+			}
+		}
+	} else if !os.IsNotExist(err) {
+		return nil, fmt.Errorf("stat store dir: %w", err)
+	}
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, fmt.Errorf("mkdir %s: %w", dir, err)
 	}
-	s := &Store{dir: dir}
 	// Two processes may initialize the same directory at once (for example an
 	// MCP server and an interactive `keysmith set`). Serialize key creation so
 	// they cannot write two different identities over each other.
@@ -53,7 +79,34 @@ func New(dir string) (*Store, error) {
 	if err := s.ensureKey(); err != nil {
 		return nil, err
 	}
+	if err := s.securePermissions(); err != nil {
+		return nil, err
+	}
 	return s, nil
+}
+
+func fileExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
+}
+
+// securePermissions tightens the store directory and its files. MkdirAll and
+// WriteFile only set modes on creation; a directory, key, or data file
+// inherited from an older version may still be group/world readable.
+func (s *Store) securePermissions() error {
+	if err := os.Chmod(s.dir, 0o700); err != nil {
+		return fmt.Errorf("secure store dir: %w", err)
+	}
+	for _, p := range []string{s.KeyPath(), s.DataPath()} {
+		if _, err := os.Stat(p); err == nil {
+			if err := os.Chmod(p, 0o600); err != nil {
+				return fmt.Errorf("secure %s: %w", filepath.Base(p), err)
+			}
+		} else if !os.IsNotExist(err) {
+			return fmt.Errorf("stat %s: %w", filepath.Base(p), err)
+		}
+	}
+	return nil
 }
 
 // lockPath is the writer lock file next to the encrypted store.
@@ -294,6 +347,9 @@ func (s *Store) Delete(key string) error {
 func (s *Store) Rotate(key string, length int) (string, error) {
 	if length < 16 {
 		length = 32
+	}
+	if length > MaxSecretLength {
+		return "", fmt.Errorf("secret length %d exceeds maximum %d", length, MaxSecretLength)
 	}
 	val, err := randomSecret(length)
 	if err != nil {

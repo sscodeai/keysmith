@@ -9,8 +9,10 @@
 package leakscan
 
 import (
+	"bufio"
 	"bytes"
 	"fmt"
+	"io"
 	"os/exec"
 	"regexp"
 	"strings"
@@ -48,20 +50,25 @@ func ScanGitHistory(repoDir string, st *store.Store, autoRotate bool) ([]ScanRes
 		}
 	}
 
-	// git log -p gives full diffs of every commit.
+	// git log -p gives full diffs of every commit. Stream it line by line: a
+	// large history must not be buffered in memory just to scan it.
 	cmd := exec.Command("git", "-C", repoDir, "log", "-p", "--all")
-	out, err := cmd.Output()
+	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return nil, fmt.Errorf("git log: %w", err)
 	}
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Start(); err != nil {
+		return nil, fmt.Errorf("git log: %w", err)
+	}
 
-	// Current file scan (working tree) — find secret-looking lines.
-	for _, line := range strings.Split(string(out), "\n") {
+	process := func(line string) {
 		trimmed := strings.TrimSpace(line)
 		if trimmed == "" || strings.HasPrefix(trimmed, "+") == false && strings.HasPrefix(trimmed, "-") == false {
 			// still scan content lines but skip pure context noise
 			if !strings.Contains(trimmed, "=") && !strings.Contains(trimmed, ":") {
-				continue
+				return
 			}
 		}
 		// Skip obvious non-secret lines.
@@ -69,7 +76,7 @@ func ScanGitHistory(repoDir string, st *store.Store, autoRotate bool) ([]ScanRes
 			strings.Contains(trimmed, "Date:") || strings.Contains(trimmed, "diff --git") ||
 			strings.Contains(trimmed, "index ") || strings.Contains(trimmed, "---") ||
 			strings.Contains(trimmed, "+++") || strings.Contains(trimmed, "@@") {
-			continue
+			return
 		}
 
 		// 1) Exact value match against store.
@@ -92,6 +99,25 @@ func ScanGitHistory(repoDir string, st *store.Store, autoRotate bool) ([]ScanRes
 		if isSecretPattern(trimmed) {
 			results = append(results, ScanResult{Pattern: "pattern", Location: redactLine(line)})
 		}
+	}
+
+	reader := bufio.NewReader(stdout)
+	for {
+		line, readErr := reader.ReadString('\n')
+		if len(line) > 0 {
+			process(strings.TrimSuffix(line, "\n"))
+		}
+		if readErr == io.EOF {
+			break
+		}
+		if readErr != nil {
+			_ = cmd.Process.Kill()
+			_ = cmd.Wait()
+			return nil, fmt.Errorf("git log: %w", readErr)
+		}
+	}
+	if err := cmd.Wait(); err != nil {
+		return nil, fmt.Errorf("git log: %w: %s", err, strings.TrimSpace(stderr.String()))
 	}
 
 	return results, nil

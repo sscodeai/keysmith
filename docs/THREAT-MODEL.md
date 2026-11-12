@@ -64,3 +64,9 @@ implying otherwise.
   mask is not a zero-information artefact.
 - Nested redemption is not supported: a stored value that itself contains a
   `[[keysmith:…]]` token is never re-expanded.
+- The MCP HTTP listener is a separate control channel: plain `-http` is
+  cleartext, including the bearer token. Use `-http-tls-cert`/`-http-tls-key`
+  or a TLS reverse proxy for any non-loopback listener.
+- One redemption command must use tokens from one session. The audit record
+  and binding check are per-session; mixing sessions is refused rather than
+  checking a token against another session's bindings.

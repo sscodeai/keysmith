@@ -157,7 +157,7 @@ def main():
 
     # Expiry: rewrite the session with a past deadline.
     for f in os.listdir(sess_dir):
-        if f == "current":
+        if not f.endswith(".json"):
             continue
         p = os.path.join(sess_dir, f)
         doc = json.load(open(p))

@@ -21,6 +21,7 @@ package main
 import (
 	"context"
 	"crypto/subtle"
+	"crypto/tls"
 	"errors"
 	"flag"
 	"fmt"
@@ -49,6 +50,8 @@ func main() {
 	storeDir := flag.String("store", defaultStoreDir(), "directory holding age-encrypted secrets (key.txt + secrets.enc)")
 	httpAddr := flag.String("http", "", "serve MCP over HTTP/SSE on this address (e.g. :8080) instead of stdio")
 	httpToken := flag.String("http-token", "", "require this bearer token on every HTTP request (required when -http binds a non-loopback address)")
+	httpTLSCert := flag.String("http-tls-cert", "", "with -http: PEM certificate chain to serve TLS")
+	httpTLSKey := flag.String("http-tls-key", "", "with -http: PEM private key to serve TLS")
 	streamable := flag.Bool("streamable", false, "with -http: use Streamable HTTP (MCP 2025) instead of SSE")
 	vaultAddr := flag.String("vault", "", "HashiCorp Vault address (e.g. http://127.0.0.1:8200) — use Vault as backend")
 	showVer := flag.Bool("version", false, "print version and exit")
@@ -63,7 +66,7 @@ func main() {
 
 	// No subcommand → MCP server mode (stdio or HTTP/SSE).
 	if len(args) == 0 {
-		runMCPServer(*storeDir, *httpAddr, *vaultAddr, *httpToken, *streamable)
+		runMCPServer(*storeDir, *httpAddr, *vaultAddr, *httpToken, *streamable, *httpTLSCert, *httpTLSKey)
 		return
 	}
 
@@ -73,7 +76,7 @@ func main() {
 	}
 }
 
-func runMCPServer(storeDir, httpAddr, vaultAddr, httpToken string, streamable bool) {
+func runMCPServer(storeDir, httpAddr, vaultAddr, httpToken string, streamable bool, httpTLSCert, httpTLSKey string) {
 	st, err := store.New(storeDir)
 	if err != nil {
 		log.Fatalf("store init: %v", err)
@@ -83,29 +86,54 @@ func runMCPServer(storeDir, httpAddr, vaultAddr, httpToken string, streamable bo
 		log.Fatalf("mcp init: %v", err)
 	}
 
+	// Validate HTTP options before deciding between stdio and HTTP: a TLS flag
+	// without -http is a configuration error, not something to ignore.
+	if err := validateHTTPOptions(httpAddr, httpToken, httpTLSCert, httpTLSKey); err != nil {
+		log.Fatalf("http: %v", err)
+	}
+
 	// HTTP mode: serve over HTTP (remote agents).
 	// Default = SSE transport (GET /sse + POST endpoint).
 	// With -streamable = MCP 2025 Streamable HTTP (single POST endpoint, JSON).
 	if httpAddr != "" {
-		if err := checkHTTPBinding(httpAddr, httpToken); err != nil {
-			log.Fatalf("http: %v", err)
+		scheme := "http"
+		if httpTLSCert != "" {
+			scheme = "https"
 		}
 		var handler http.Handler
 		if streamable {
 			handler = sdk.NewStreamableHTTPHandler(func(*http.Request) *sdk.Server { return srv.Handler() },
 				&sdk.StreamableHTTPOptions{JSONResponse: true, Stateless: true})
 			log.Printf("keysmith serving MCP Streamable HTTP (stateless) on %s", httpAddr)
-			log.Printf("  endpoint: http://localhost%s/mcp", httpAddr)
+			log.Printf("  endpoint: %s://localhost%s/mcp", scheme, httpAddr)
 		} else {
 			handler = sdk.NewSSEHandler(func(*http.Request) *sdk.Server { return srv.Handler() }, nil)
 			log.Printf("keysmith serving MCP over SSE on %s", httpAddr)
-			log.Printf("  endpoint: http://localhost%s/sse", httpAddr)
+			log.Printf("  endpoint: %s://localhost%s/sse", scheme, httpAddr)
 		}
 		if httpToken != "" {
 			handler = requireBearer(handler, httpToken)
 			log.Printf("  authentication: Authorization: Bearer <token> is required")
 		}
-		if err := http.ListenAndServe(httpAddr, handler); err != nil {
+
+		// ReadHeaderTimeout is the slowloris guard. There is deliberately no
+		// WriteTimeout: SSE responses are long-lived and must not be cut off.
+		httpSrv := &http.Server{
+			Addr:              httpAddr,
+			Handler:           handler,
+			ReadHeaderTimeout: 10 * time.Second,
+			ReadTimeout:       30 * time.Second,
+			IdleTimeout:       120 * time.Second,
+		}
+		if httpTLSCert != "" {
+			httpSrv.TLSConfig = &tls.Config{MinVersion: tls.VersionTLS12}
+			log.Printf("  TLS: enabled (minimum TLS 1.2)")
+			if err := httpSrv.ListenAndServeTLS(httpTLSCert, httpTLSKey); err != nil {
+				log.Fatalf("http server: %v", err)
+			}
+			return
+		}
+		if err := httpSrv.ListenAndServe(); err != nil {
 			log.Fatalf("http server: %v", err)
 		}
 		return
@@ -177,14 +205,9 @@ func runCLI(storeDir, vaultAddr string, args []string) error {
 		}
 		key := rest[0]
 		// Read value from stdin — never from argv (shell history / proc leak).
-		val, err := io.ReadAll(os.Stdin)
+		value, err := readSecretValue(os.Stdin)
 		if err != nil {
-			return fmt.Errorf("read stdin: %w", err)
-		}
-		value := strings.TrimSuffix(string(val), "\n")
-		value = strings.TrimSuffix(value, "\r")
-		if value == "" {
-			return fmt.Errorf("empty value from stdin")
+			return err
 		}
 		if err := st.Set(key, value); err != nil {
 			return err
@@ -246,6 +269,9 @@ func runCLI(storeDir, vaultAddr string, args []string) error {
 		if err := os.MkdirAll(dir, 0o700); err != nil {
 			return err
 		}
+		if err := os.Chmod(dir, 0o700); err != nil {
+			return err
+		}
 		fmt.Println(dir)
 		return nil
 
@@ -278,14 +304,9 @@ func runCLI(storeDir, vaultAddr string, args []string) error {
 		if err != nil {
 			return err
 		}
-		val, err := io.ReadAll(os.Stdin)
+		value, err := readSecretValue(os.Stdin)
 		if err != nil {
-			return fmt.Errorf("read stdin: %w", err)
-		}
-		value := strings.TrimSuffix(string(val), "\n")
-		value = strings.TrimSuffix(value, "\r")
-		if value == "" {
-			return fmt.Errorf("empty value from stdin")
+			return err
 		}
 		if err := vc.SetKV(context.Background(), rest[0], value); err != nil {
 			return err
@@ -346,7 +367,7 @@ func runCLI(storeDir, vaultAddr string, args []string) error {
 			return err
 		}
 		fmt.Fprintf(os.Stderr, "keysmith: session %s (names: %s), binding: %s, expires at %s\n",
-			sess.ID[:8], strings.Join(sess.Names, ","), binding.String(),
+			sess.ShortID(), strings.Join(sess.Names, ","), binding.String(),
 			sess.ExpiresAt.Local().Format(time.RFC3339))
 		// A path or header predicate alone still leaves the host unrestricted;
 		// warn whenever no host was given, not only for a fully zero binding.
@@ -393,9 +414,11 @@ USAGE:
   keysmith -version
 
 FLAGS:
-  -store DIR   store directory (default ~/.keysmith or $KEYSMITH_STORE)
-  -http ADDR   serve MCP over HTTP (SSE) instead of stdio
-  -http-token  require Authorization: Bearer <token> on every HTTP request
+  -store DIR         store directory (default ~/.keysmith or $KEYSMITH_STORE)
+  -http ADDR         serve MCP over HTTP (SSE) instead of stdio
+  -http-token        require Authorization: Bearer <token> on every HTTP request
+  -http-tls-cert     with -http: PEM certificate chain to serve TLS
+  -http-tls-key      with -http: PEM private key to serve TLS
 
 SECURITY:
   - set reads the value from stdin — never pass secrets as arguments
@@ -408,6 +431,8 @@ SECURITY:
     run --target must match, or the command is not started
   - a non-loopback -http bind requires -http-token; unauthenticated requests
     are answered with 401 instead of reaching the store
+  - plain -http is cleartext: on a non-loopback bind use -http-tls-cert and
+    -http-tls-key, or put the listener behind a TLS reverse proxy
   - secrets are stored age-encrypted at rest (key.txt 0600, secrets.enc armor)
 `
 }
@@ -607,6 +632,28 @@ func checkNoTokensInCommand(cmd []string) error {
 	return nil
 }
 
+// maxInputBytes bounds a value read from stdin. A secret is not a file
+// upload; the cap keeps a runaway producer from exhausting memory.
+const maxInputBytes = 1 << 20
+
+// readSecretValue reads one value from r, strips one trailing newline, and
+// refuses an empty or oversized value.
+func readSecretValue(r io.Reader) (string, error) {
+	b, err := io.ReadAll(io.LimitReader(r, maxInputBytes+1))
+	if err != nil {
+		return "", fmt.Errorf("read stdin: %w", err)
+	}
+	if len(b) > maxInputBytes {
+		return "", fmt.Errorf("value is too large (max %d bytes)", maxInputBytes)
+	}
+	value := strings.TrimSuffix(string(b), "\n")
+	value = strings.TrimSuffix(value, "\r")
+	if value == "" {
+		return "", fmt.Errorf("empty value from stdin")
+	}
+	return value, nil
+}
+
 // parseEnvTemplate splits an --env value of the form KEY=<template>.
 func parseEnvTemplate(tpl string) (key, template string, err error) {
 	eq := strings.Index(tpl, "=")
@@ -638,46 +685,48 @@ func runRedeemed(storeDir string, st *store.Store, rest []string) error {
 		return err
 	}
 
-	needsSession := false
-	for _, tpl := range templates {
-		if redeem.HasToken(tpl) {
-			needsSession = true
-			break
-		}
-	}
-
 	sessions := redeem.NewSessions(storeDir)
 	resolver := redeem.NewResolver(sessions, st)
-	var sess *redeem.Session
-	if needsSession {
-		var err error
-		if sid != "" {
-			sess, err = sessions.LoadPrefix(sid)
-		} else {
-			sess, err = sessions.Current()
-		}
-		if err != nil {
-			return err
-		}
-	}
 
 	childEnv := make([]string, 0, len(templates))
-	var redeemed []string
+	var resolvedAll []redeem.Resolved
 	for _, tpl := range templates {
 		key, template, err := parseEnvTemplate(tpl)
 		if err != nil {
 			return err
 		}
-		value, names, err := resolver.Resolve(template)
+		value, resolved, err := resolver.ResolveDetailed(template)
 		if err != nil {
 			// Fail closed: nothing is exported, nothing is executed.
 			return fmt.Errorf("run: %w", err)
 		}
 		childEnv = append(childEnv, key+"="+value)
-		redeemed = append(redeemed, names...)
+		resolvedAll = append(resolvedAll, resolved...)
 	}
 
-	if len(redeemed) > 0 {
+	if len(resolvedAll) > 0 {
+		// Use the session that actually issued the tokens. A mix of sessions is
+		// refused: checking one token against another session's bindings would
+		// skip the binding entirely.
+		sess, err := redeem.SessionOf(resolvedAll)
+		if err != nil {
+			return fmt.Errorf("run: %w", err)
+		}
+		if sid != "" {
+			expected, err := sessions.LoadPrefix(sid)
+			if err != nil {
+				return err
+			}
+			if expected.ID != sess.ID {
+				return fmt.Errorf("run: token belongs to session %s, but --session is %s",
+					sess.ShortID(), expected.ShortID())
+			}
+		}
+		redeemed := make([]string, 0, len(resolvedAll))
+		for _, item := range resolvedAll {
+			redeemed = append(redeemed, item.Name)
+		}
+
 		// Target binding, enforced before the audit record and before the child
 		// exists: a bound token may only be redeemed into a command aimed at a
 		// destination its binding allows. Unbound names are still reported.
@@ -702,7 +751,7 @@ func runRedeemed(storeDir string, st *store.Store, rest []string) error {
 		// Audited before the child starts, and the audit is part of the
 		// fail-closed path: no record, no execution.
 		rec := redeem.AuditRecord{
-			Session: sess.ID[:8],
+			Session: sess.ShortID(),
 			Keys:    redeem.SortedUnique(redeemed),
 			Command: filepath.Base(cmdArgs[0]),
 			Argc:    len(cmdArgs) - 1,
@@ -779,6 +828,25 @@ func checkHTTPBinding(addr, token string) error {
 	}
 	return fmt.Errorf("refusing to serve MCP on non-loopback %q without -http-token: "+
 		"bind 127.0.0.1, or pass -http-token and send Authorization: Bearer <token>", addr)
+}
+
+// validateHTTPOptions checks the HTTP listener configuration before any
+// listener is opened. TLS is optional, but both files must be present together
+// and only make sense with -http.
+func validateHTTPOptions(addr, token, certFile, keyFile string) error {
+	if addr == "" {
+		if certFile != "" || keyFile != "" {
+			return errors.New("-http-tls-cert and -http-tls-key require -http")
+		}
+		return nil
+	}
+	if err := checkHTTPBinding(addr, token); err != nil {
+		return err
+	}
+	if (certFile == "") != (keyFile == "") {
+		return errors.New("-http-tls-cert and -http-tls-key must be given together")
+	}
+	return nil
 }
 
 // isLoopbackListen reports whether addr binds only a loopback interface. An

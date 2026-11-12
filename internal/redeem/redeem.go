@@ -48,6 +48,7 @@ const (
 	sessionsDir = "sessions"
 	currentFile = "current"
 	auditFile   = "audit.log"
+	sessionLock = "sessions.lock"
 )
 
 // Fail-closed errors. Every one of these means: do not run the command.
@@ -62,6 +63,10 @@ var (
 	// ErrBindingConflict: re-issuing a name with a different binding inside one
 	// session is refused, so a binding cannot be widened after the fact.
 	ErrBindingConflict = errors.New("conflicting target binding in this session")
+	// ErrMixedSessions: one command carries tokens issued in different
+	// sessions. The audit record and binding check are per-session, so refuse
+	// rather than check one token against another session's bindings.
+	ErrMixedSessions = errors.New("tokens from multiple sessions cannot be redeemed in one command")
 )
 
 var tokenRe = regexp.MustCompile(`\[\[keysmith:v1:([A-Za-z0-9_.-]{1,64}):([0-9a-f]{8})\]\]`)
@@ -96,7 +101,19 @@ func (s *Session) Binding(name string) (Binding, bool) {
 
 // Token renders the token a caller should embed for this session.
 func (s *Session) Token(name string) string {
-	return fmt.Sprintf("%s%s:%s:%s]]", Prefix, Version, name, s.ID[:8])
+	return fmt.Sprintf("%s%s:%s:%s]]", Prefix, Version, name, s.ShortID())
+}
+
+// ShortID is the first 8 characters of the session id, or the whole id when a
+// malformed session carries fewer. It never panics on a short id.
+func (s *Session) ShortID() string {
+	if s == nil {
+		return ""
+	}
+	if len(s.ID) <= 8 {
+		return s.ID
+	}
+	return s.ID[:8]
 }
 
 // HasName reports whether name was issued in this session.
@@ -107,6 +124,36 @@ func (s *Session) HasName(name string) bool {
 		}
 	}
 	return false
+}
+
+// Resolved is one token occurrence: the key name and the session that issued
+// it. Binding enforcement uses the issuing session, never an unrelated
+// current session.
+type Resolved struct {
+	Name    string
+	Session *Session
+}
+
+// SessionOf returns the single session that issued all resolved tokens. A mix
+// of sessions is refused: the audit record and binding check are per-session,
+// and checking a token against another session's bindings would skip them.
+func SessionOf(resolved []Resolved) (*Session, error) {
+	if len(resolved) == 0 {
+		return nil, nil
+	}
+	sess := resolved[0].Session
+	if sess == nil {
+		return nil, ErrSessionUnknown
+	}
+	for _, r := range resolved[1:] {
+		if r.Session == nil {
+			return nil, ErrSessionUnknown
+		}
+		if r.Session.ID != sess.ID {
+			return nil, fmt.Errorf("%w: %s and %s", ErrMixedSessions, sess.ShortID(), r.Session.ShortID())
+		}
+	}
+	return sess, nil
 }
 
 // AuditRecord is one line of the redemption audit log. It deliberately has no
@@ -130,6 +177,19 @@ type Sessions struct {
 // NewSessions returns a session store rooted at <storeDir>/sessions.
 func NewSessions(storeDir string) *Sessions {
 	return &Sessions{dir: filepath.Join(storeDir, sessionsDir)}
+}
+
+// lockPath is the writer lock file next to the session files.
+func (s *Sessions) lockPath() string { return filepath.Join(s.dir, sessionLock) }
+
+// lock serializes the read-modify-write in IssueBound. Without it, two
+// concurrent `keysmith token` calls can lose names or create two sessions.
+func (s *Sessions) lock() (func(), error) {
+	l, err := lockFile(s.lockPath())
+	if err != nil {
+		return nil, fmt.Errorf("lock sessions: %w", err)
+	}
+	return l.Unlock, nil
 }
 
 // Current returns the most recently issued, still-valid session.
@@ -207,6 +267,14 @@ func (s *Sessions) IssueBound(name string, ttl time.Duration, b Binding) (*Sessi
 	if err := os.MkdirAll(s.dir, 0o700); err != nil {
 		return nil, err
 	}
+	if err := os.Chmod(s.dir, 0o700); err != nil {
+		return nil, err
+	}
+	unlock, err := s.lock()
+	if err != nil {
+		return nil, err
+	}
+	defer unlock()
 
 	sess, err := s.Current()
 	if err != nil {
@@ -221,7 +289,7 @@ func (s *Sessions) IssueBound(name string, ttl time.Duration, b Binding) (*Sessi
 	}
 	if prev, ok := sess.Binding(name); ok && prev.String() != b.String() {
 		return nil, fmt.Errorf("%w: key %q already has binding %s in session %s",
-			ErrBindingConflict, name, prev.String(), sess.ID[:8])
+			ErrBindingConflict, name, prev.String(), sess.ShortID())
 	}
 	if !b.IsZero() {
 		if sess.Bindings == nil {
@@ -234,7 +302,7 @@ func (s *Sessions) IssueBound(name string, ttl time.Duration, b Binding) (*Sessi
 	if err := s.write(sess); err != nil {
 		return nil, err
 	}
-	if err := os.WriteFile(filepath.Join(s.dir, currentFile), []byte(sess.ID), 0o600); err != nil {
+	if err := writeFileAtomic(filepath.Join(s.dir, currentFile), []byte(sess.ID), 0o600); err != nil {
 		return nil, err
 	}
 	return sess, nil
@@ -245,7 +313,39 @@ func (s *Sessions) write(sess *Session) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(filepath.Join(s.dir, sess.ID+".json"), b, 0o600)
+	return writeFileAtomic(filepath.Join(s.dir, sess.ID+".json"), b, 0o600)
+}
+
+// writeFileAtomic writes b through a uniquely named temp file in the same
+// directory and a rename, so a concurrent reader never sees a partial session
+// or current pointer.
+func writeFileAtomic(path string, b []byte, mode os.FileMode) error {
+	f, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".tmp-*")
+	if err != nil {
+		return err
+	}
+	tmp := f.Name()
+	cleanup := func() {
+		_ = f.Close()
+		_ = os.Remove(tmp)
+	}
+	if err := f.Chmod(mode); err != nil {
+		cleanup()
+		return err
+	}
+	if _, err := f.Write(b); err != nil {
+		cleanup()
+		return err
+	}
+	if err := f.Close(); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	return nil
 }
 
 // Resolver substitutes tokens using issued sessions and a value source.
@@ -271,6 +371,24 @@ func HasToken(text string) bool {
 // session, missing key in the store, malformed token — returns an error and no
 // output. Error messages never contain a value.
 func (r *Resolver) Resolve(text string) (string, []string, error) {
+	out, resolved, err := r.ResolveDetailed(text)
+	if err != nil {
+		return "", nil, err
+	}
+	if len(resolved) == 0 {
+		return out, nil, nil
+	}
+	names := make([]string, 0, len(resolved))
+	for _, item := range resolved {
+		names = append(names, item.Name)
+	}
+	return out, SortedUnique(names), nil
+}
+
+// ResolveDetailed is Resolve with the issuing session attached to every name.
+// Binding enforcement must use the session that actually issued the token, not
+// an unrelated current session.
+func (r *Resolver) ResolveDetailed(text string) (string, []Resolved, error) {
 	if !HasToken(text) {
 		return text, nil, nil
 	}
@@ -295,8 +413,7 @@ func (r *Resolver) Resolve(text string) (string, []string, error) {
 
 	var b strings.Builder
 	last := 0
-	seen := map[string]bool{}
-	names := make([]string, 0, len(locs))
+	resolved := make([]Resolved, 0, len(locs))
 	for _, loc := range locs { // loc = [full0 full1 name0 name1 sid0 sid1]
 		b.WriteString(text[last:loc[0]])
 		name := text[loc[2]:loc[3]]
@@ -307,7 +424,7 @@ func (r *Resolver) Resolve(text string) (string, []string, error) {
 			return "", nil, err
 		}
 		if !sess.HasName(name) {
-			return "", nil, fmt.Errorf("%w: %q in session %s", ErrNameNotIssued, name, sess.ID[:8])
+			return "", nil, fmt.Errorf("%w: %q in session %s", ErrNameNotIssued, name, sess.ShortID())
 		}
 		val, err := r.values.Get(name)
 		if err != nil {
@@ -317,16 +434,12 @@ func (r *Resolver) Resolve(text string) (string, []string, error) {
 			return "", nil, fmt.Errorf("key %q resolves to an empty value", name)
 		}
 		b.WriteString(val)
-		if !seen[name] {
-			seen[name] = true
-			names = append(names, name)
-		}
+		resolved = append(resolved, Resolved{Name: name, Session: sess})
 		last = loc[1]
 	}
 	b.WriteString(text[last:])
 
-	sort.Strings(names)
-	return b.String(), names, nil
+	return b.String(), resolved, nil
 }
 
 // loadBySID finds the session whose id starts with the 8-hex-character prefix

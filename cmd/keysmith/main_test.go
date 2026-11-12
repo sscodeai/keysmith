@@ -31,6 +31,27 @@ func TestCheckHTTPBindingRequiresAuthOffLoopback(t *testing.T) {
 	}
 }
 
+func TestValidateHTTPOptions(t *testing.T) {
+	cases := []struct {
+		addr, token, cert, key string
+		wantErr                bool
+	}{
+		{"127.0.0.1:8080", "", "", "", false},
+		{"192.168.1.10:8080", "", "", "", true},
+		{"192.168.1.10:8080", "s3cret", "", "", false},
+		{"", "", "cert.pem", "key.pem", true},
+		{"127.0.0.1:8080", "", "cert.pem", "", true},
+		{"127.0.0.1:8080", "", "cert.pem", "key.pem", false},
+	}
+	for _, c := range cases {
+		err := validateHTTPOptions(c.addr, c.token, c.cert, c.key)
+		if (err != nil) != c.wantErr {
+			t.Errorf("validateHTTPOptions(%q, %q, %q, %q) = %v, wantErr %v",
+				c.addr, c.token, c.cert, c.key, err, c.wantErr)
+		}
+	}
+}
+
 func TestRequireBearer(t *testing.T) {
 	ok := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
@@ -175,6 +196,19 @@ func TestParseEnvTemplate(t *testing.T) {
 	}
 	if _, _, err := parseEnvTemplate("A=1=2"); err != nil {
 		t.Fatalf("only the first = separates: %v", err)
+	}
+}
+
+func TestReadSecretValue(t *testing.T) {
+	got, err := readSecretValue(strings.NewReader("hunter2\r\n"))
+	if err != nil || got != "hunter2" {
+		t.Fatalf("readSecretValue = %q, %v; want hunter2, nil", got, err)
+	}
+	if _, err := readSecretValue(strings.NewReader("")); err == nil {
+		t.Fatal("empty value should be refused")
+	}
+	if _, err := readSecretValue(strings.NewReader(strings.Repeat("x", maxInputBytes+1))); err == nil {
+		t.Fatal("oversized value should be refused")
 	}
 }
 

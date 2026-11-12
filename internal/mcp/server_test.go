@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/sscodeai/keysmith/internal/store"
 )
 
 // The value_file argument is agent-controlled. These cases are the access
@@ -76,5 +78,53 @@ func TestReadValueFileRemovesTheFileAfterReading(t *testing.T) {
 	}
 	if _, err := os.Stat(path); !os.IsNotExist(err) {
 		t.Errorf("value file still exists after read: %v", err)
+	}
+}
+
+func TestNewServerSecuresInboxPermissions(t *testing.T) {
+	dir := t.TempDir()
+	st, err := store.New(dir)
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	inbox := filepath.Join(dir, InboxDirName)
+	if err := os.MkdirAll(inbox, 0o700); err != nil {
+		t.Fatalf("mkdir inbox: %v", err)
+	}
+	if err := os.Chmod(inbox, 0o777); err != nil {
+		t.Fatalf("chmod inbox: %v", err)
+	}
+	if _, err := NewServer(st, "test"); err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	fi, err := os.Stat(inbox)
+	if err != nil {
+		t.Fatalf("stat inbox: %v", err)
+	}
+	if fi.Mode().Perm() != 0o700 {
+		t.Errorf("inbox perms = %o, want 700", fi.Mode().Perm())
+	}
+}
+
+func TestReadValueFileRejectsOversizedOrNonRegular(t *testing.T) {
+	inbox := t.TempDir()
+
+	big := filepath.Join(inbox, "big.txt")
+	if err := os.WriteFile(big, make([]byte, MaxValueFileBytes+1), 0o600); err != nil {
+		t.Fatalf("write big: %v", err)
+	}
+	if _, err := readValueFile(inbox, big); err == nil {
+		t.Fatal("oversized value_file was accepted")
+	}
+	if _, err := os.Stat(big); !os.IsNotExist(err) {
+		t.Errorf("oversized value file should be removed: %v", err)
+	}
+
+	dir := filepath.Join(inbox, "subdir")
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if _, err := readValueFile(inbox, dir); err == nil {
+		t.Fatal("directory value_file was accepted")
 	}
 }

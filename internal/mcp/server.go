@@ -12,6 +12,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -35,6 +36,11 @@ type Server struct {
 // outside it is refused by readValueFile.
 const InboxDirName = "inbox"
 
+// MaxValueFileBytes bounds the plaintext staging file accepted by put. A
+// secret is not a file upload; the cap keeps an agent-controlled value_file
+// from making the server allocate an unbounded buffer.
+const MaxValueFileBytes = 1 << 20
+
 // NewServer creates an MCP server backed by the given store. version is what
 // clients see as serverInfo.version; an empty value is reported as "dev".
 //
@@ -48,6 +54,9 @@ func NewServer(st *store.Store, version string) (*Server, error) {
 	inbox := filepath.Join(st.Dir(), InboxDirName)
 	if err := os.MkdirAll(inbox, 0o700); err != nil {
 		return nil, fmt.Errorf("create inbox: %w", err)
+	}
+	if err := os.Chmod(inbox, 0o700); err != nil {
+		return nil, fmt.Errorf("secure inbox: %w", err)
 	}
 	s := &Server{store: st, inbox: inbox}
 	srv := mcp.NewServer(&mcp.Implementation{
@@ -226,9 +235,34 @@ func readValueFile(inbox, path string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	b, err := os.ReadFile(inside)
+	fi, err := os.Stat(inside)
 	if err != nil {
 		return "", fmt.Errorf("read value file: %w", err)
+	}
+	if !fi.Mode().IsRegular() {
+		return "", fmt.Errorf("value_file must be a regular file")
+	}
+	if fi.Size() > MaxValueFileBytes {
+		_ = os.Remove(inside)
+		return "", fmt.Errorf("value_file is too large (max %d bytes)", MaxValueFileBytes)
+	}
+	f, err := os.Open(inside)
+	if err != nil {
+		return "", fmt.Errorf("read value file: %w", err)
+	}
+	b, readErr := io.ReadAll(io.LimitReader(f, MaxValueFileBytes+1))
+	closeErr := f.Close()
+	if readErr != nil {
+		_ = os.Remove(inside)
+		return "", fmt.Errorf("read value file: %w", readErr)
+	}
+	if closeErr != nil {
+		_ = os.Remove(inside)
+		return "", fmt.Errorf("close value file: %w", closeErr)
+	}
+	if len(b) > MaxValueFileBytes {
+		_ = os.Remove(inside)
+		return "", fmt.Errorf("value_file is too large (max %d bytes)", MaxValueFileBytes)
 	}
 	val := strings.TrimSuffix(string(b), "\n")
 	val = strings.TrimSuffix(val, "\r")
