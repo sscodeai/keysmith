@@ -333,24 +333,8 @@ func runCLI(storeDir, vaultAddr string, args []string) error {
 		// not a secret: it only resolves locally, only in this session, and only
 		// for the names issued here. The --allow-* flags record a target binding
 		// that `keysmith run --target` enforces.
-		if len(rest) < 1 {
-			return fmt.Errorf("token requires a key name: keysmith token NAME [--ttl 1h] [--allow-host H] [--allow-path P] [--allow-header HN]")
-		}
-		name := rest[0]
-		ttl := redeem.DefaultTTL
-		if v, ok := flagValue(rest, "--ttl"); ok {
-			d, err := time.ParseDuration(v)
-			if err != nil {
-				return fmt.Errorf("invalid --ttl %q: %w", v, err)
-			}
-			ttl = d
-		}
-		binding := redeem.Binding{
-			Hosts:        flagValues(rest, "--allow-host"),
-			PathPrefixes: flagValues(rest, "--allow-path"),
-			Headers:      flagValues(rest, "--allow-header"),
-		}
-		if err := validateBinding(binding); err != nil {
+		name, ttl, binding, err := parseTokenArgs(rest)
+		if err != nil {
 			return err
 		}
 		// Fail closed: never issue a token for a name this store cannot resolve.
@@ -364,7 +348,9 @@ func runCLI(storeDir, vaultAddr string, args []string) error {
 		fmt.Fprintf(os.Stderr, "keysmith: session %s (names: %s), binding: %s, expires at %s\n",
 			sess.ID[:8], strings.Join(sess.Names, ","), binding.String(),
 			sess.ExpiresAt.Local().Format(time.RFC3339))
-		if binding.IsZero() {
+		// A path or header predicate alone still leaves the host unrestricted;
+		// warn whenever no host was given, not only for a fully zero binding.
+		if len(binding.Hosts) == 0 {
 			fmt.Fprintf(os.Stderr, "keysmith: warning: no --allow-host given — this token can be redeemed "+
 				"into a command aimed at any host\n")
 		}
@@ -435,31 +421,83 @@ func containsFlag(args []string, flag string) bool {
 	return false
 }
 
-// flagValue returns the value of "--name value" or "--name=value".
-func flagValue(args []string, name string) (string, bool) {
-	for i, a := range args {
-		if a == name && i+1 < len(args) {
-			return args[i+1], true
-		}
-		if strings.HasPrefix(a, name+"=") {
-			return strings.TrimPrefix(a, name+"="), true
+// parseTokenArgs parses `keysmith token NAME [--ttl D] [--allow-host H]...`
+// after the subcommand. It is strict on purpose: a flag with no value, an
+// unknown flag, or a value that looks like another flag is refused, so a
+// binding cannot be silently dropped or read as a different flag's value.
+func parseTokenArgs(args []string) (string, time.Duration, redeem.Binding, error) {
+	if len(args) == 0 {
+		return "", 0, redeem.Binding{}, fmt.Errorf("token requires a key name: keysmith token NAME [--ttl 1h] [--allow-host H] [--allow-path P] [--allow-header HN]")
+	}
+	name := args[0]
+	ttl := redeem.DefaultTTL
+	var b redeem.Binding
+
+	for i := 1; i < len(args); i++ {
+		switch a := args[i]; {
+		case a == "--ttl" || strings.HasPrefix(a, "--ttl="):
+			v, ok := flagValueAt(args, &i, "--ttl")
+			if !ok {
+				return "", 0, redeem.Binding{}, fmt.Errorf("token: --ttl requires a value")
+			}
+			d, err := time.ParseDuration(v)
+			if err != nil {
+				return "", 0, redeem.Binding{}, fmt.Errorf("token: invalid --ttl %q: %w", v, err)
+			}
+			if d <= 0 {
+				return "", 0, redeem.Binding{}, fmt.Errorf("token: --ttl must be positive, got %q", v)
+			}
+			ttl = d
+		case a == "--allow-host" || strings.HasPrefix(a, "--allow-host="):
+			v, ok := flagValueAt(args, &i, "--allow-host")
+			if !ok {
+				return "", 0, redeem.Binding{}, fmt.Errorf("token: --allow-host requires a value")
+			}
+			b.Hosts = append(b.Hosts, v)
+		case a == "--allow-path" || strings.HasPrefix(a, "--allow-path="):
+			v, ok := flagValueAt(args, &i, "--allow-path")
+			if !ok {
+				return "", 0, redeem.Binding{}, fmt.Errorf("token: --allow-path requires a value")
+			}
+			b.PathPrefixes = append(b.PathPrefixes, v)
+		case a == "--allow-header" || strings.HasPrefix(a, "--allow-header="):
+			v, ok := flagValueAt(args, &i, "--allow-header")
+			if !ok {
+				return "", 0, redeem.Binding{}, fmt.Errorf("token: --allow-header requires a value")
+			}
+			b.Headers = append(b.Headers, v)
+		default:
+			return "", 0, redeem.Binding{}, fmt.Errorf("token: unexpected argument %q (flags must be --ttl, --allow-host, --allow-path or --allow-header)", a)
 		}
 	}
-	return "", false
+	if err := validateBinding(b); err != nil {
+		return "", 0, redeem.Binding{}, err
+	}
+	return name, ttl, b, nil
 }
 
-// flagValues returns every value given for a repeatable flag.
-func flagValues(args []string, name string) []string {
-	var out []string
-	for i, a := range args {
-		switch {
-		case a == name && i+1 < len(args):
-			out = append(out, args[i+1])
-		case strings.HasPrefix(a, name+"="):
-			out = append(out, strings.TrimPrefix(a, name+"="))
+// flagValueAt returns the value of args[*i] for a flag in either "--flag value"
+// or "--flag=value" form, advancing *i past a separate value. It reports false
+// when the flag has no value, or when the next argument looks like another
+// flag: consuming "--allow-path" as a host would silently bind the wrong thing.
+func flagValueAt(args []string, i *int, name string) (string, bool) {
+	a := args[*i]
+	if strings.HasPrefix(a, name+"=") {
+		v := strings.TrimPrefix(a, name+"=")
+		if strings.HasPrefix(v, "--") {
+			return "", false
 		}
+		return v, true
 	}
-	return out
+	if a != name || *i+1 >= len(args) {
+		return "", false
+	}
+	v := args[*i+1]
+	if strings.HasPrefix(v, "--") {
+		return "", false
+	}
+	*i = *i + 1
+	return v, true
 }
 
 // validateBinding rejects a malformed binding before it is stored, so the

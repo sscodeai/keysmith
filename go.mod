@@ -1,6 +1,6 @@
 module github.com/sscodeai/keysmith
 
-go 1.25.13
+go 1.26.11
 
 require (
 	filippo.io/age v1.2.1

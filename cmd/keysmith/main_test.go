@@ -5,6 +5,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 const token = "[[keysmith:v1:DEMO_KEY:8f3a2b1c]]"
@@ -224,17 +225,62 @@ func TestEnvWithoutAndValidEnvName(t *testing.T) {
 	}
 }
 
-func TestFlagValueAndContainsFlag(t *testing.T) {
-	if v, ok := flagValue([]string{"--ttl", "15m"}, "--ttl"); !ok || v != "15m" {
-		t.Fatalf("space form failed: %q %v", v, ok)
-	}
-	if v, ok := flagValue([]string{"--ttl=2h"}, "--ttl"); !ok || v != "2h" {
-		t.Fatalf("equals form failed: %q %v", v, ok)
-	}
-	if _, ok := flagValue([]string{"--other", "x"}, "--ttl"); ok {
-		t.Fatalf("absent flag should not be found")
-	}
+func TestContainsFlag(t *testing.T) {
 	if !containsFlag([]string{"get", "KEY", "--unsafe"}, "--unsafe") {
 		t.Fatalf("containsFlag should find the flag")
+	}
+	if containsFlag([]string{"get", "KEY"}, "--unsafe") {
+		t.Fatalf("containsFlag should not find an absent flag")
+	}
+}
+
+func TestParseTokenArgs(t *testing.T) {
+	name, ttl, b, err := parseTokenArgs([]string{
+		"DB_PASSWORD",
+		"--ttl", "15m",
+		"--allow-host", "api.example.test",
+		"--allow-host=.example.test",
+		"--allow-path=/v1/",
+		"--allow-header", "Authorization",
+	})
+	if err != nil {
+		t.Fatalf("parseTokenArgs: %v", err)
+	}
+	if name != "DB_PASSWORD" {
+		t.Fatalf("name = %q, want DB_PASSWORD", name)
+	}
+	if ttl != 15*time.Minute {
+		t.Fatalf("ttl = %v, want 15m", ttl)
+	}
+	if len(b.Hosts) != 2 || b.Hosts[0] != "api.example.test" || b.Hosts[1] != ".example.test" {
+		t.Fatalf("hosts = %v", b.Hosts)
+	}
+	if len(b.PathPrefixes) != 1 || b.PathPrefixes[0] != "/v1/" {
+		t.Fatalf("paths = %v", b.PathPrefixes)
+	}
+	if len(b.Headers) != 1 || b.Headers[0] != "Authorization" {
+		t.Fatalf("headers = %v", b.Headers)
+	}
+}
+
+func TestParseTokenArgsRejectsMalformedBindings(t *testing.T) {
+	cases := [][]string{
+		{}, // no name
+		{"KEY", "--allow-host", "api.example.test", "--allow-path"}, // dangling flag
+		{"KEY", "--allow-host", "--allow-path", "/v1/"},             // flag consumed as value
+		{"KEY", "--allow-host=--allow-path"},                        // same, equals form
+		{"KEY", "--allow-path"},                                     // dangling path
+		{"KEY", "--allow-header"},                                   // dangling header
+		{"KEY", "--ttl"},                                            // dangling ttl
+		{"KEY", "--ttl", "0"},                                       // non-positive ttl
+		{"KEY", "--ttl", "-1h"},                                     // non-positive ttl
+		{"KEY", "--allow-host="},                                    // empty value
+		{"KEY", "--unknown", "x"},                                   // unknown option
+		{"KEY", "extra"},                                            // stray positional
+	}
+	for _, args := range cases {
+		if _, _, _, err := parseTokenArgs(args); err == nil {
+			t.Errorf("parseTokenArgs(%v) = nil error, want refusal", args)
+		}
 	}
 }
