@@ -90,6 +90,16 @@ def main():
     assert "hunter2" not in put_text, "PUT LEAK!"
     print("  value file removed:", not os.path.exists(valfile))
 
+    # 4c. an empty value is refused, matching `keysmith set`.
+    with open(valfile, "w") as f:
+        pass
+    send(proc, {"jsonrpc": "2.0", "id": 32, "method": "tools/call",
+                "params": {"name": "put", "arguments": {"key": "EMPTY_VALUE", "value_file": valfile}}})
+    r = recv(proc)
+    refused_empty = bool(r.get("error")) or bool((r.get("result") or {}).get("isError"))
+    print("put empty refused:", refused_empty)
+    assert refused_empty, "empty value was accepted"
+
     # 5. tools/call list (masked)
     send(proc, {"jsonrpc": "2.0", "id": 4, "method": "tools/call",
                 "params": {"name": "list", "arguments": {}}})
@@ -98,6 +108,7 @@ def main():
     print("list:", list_text.strip())
     assert "sk-super-secret-e2e-1234567890" not in list_text, "LEAK!"
     assert "hunter2" not in list_text, "LIST LEAK!"
+    assert "EMPTY_VALUE" not in list_text, "empty value was stored"
 
     # 6. tools/call get (masked)
     send(proc, {"jsonrpc": "2.0", "id": 5, "method": "tools/call",

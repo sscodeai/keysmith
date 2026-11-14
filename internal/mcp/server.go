@@ -151,7 +151,7 @@ func NewServer(st *store.Store, version string) (*Server, error) {
 	}
 	mcp.AddTool(srv, &mcp.Tool{
 		Name: "put",
-		Description: "Store a secret. Write the value to a file inside the keysmith inbox " +
+		Description: "Store a non-empty secret. Write the value to a file inside the keysmith inbox " +
 			"(run `keysmith inbox` for the path), then pass that path as value_file: paths " +
 			"outside the inbox are refused, and the file is deleted after it is read.",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, args putArgs) (*mcp.CallToolResult, any, error) {
@@ -161,6 +161,9 @@ func NewServer(st *store.Store, version string) (*Server, error) {
 		val, err := readValueFile(s.inbox, args.ValueFile)
 		if err != nil {
 			return nil, nil, err
+		}
+		if val == "" {
+			return nil, nil, errors.New("value is empty: write a non-empty value to value_file")
 		}
 		if err := st.Set(args.Key, val); err != nil {
 			return nil, nil, fmt.Errorf("set %q: %w", args.Key, err)
