@@ -1,6 +1,7 @@
 package redeem
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -378,5 +379,78 @@ func TestSessionOfRejectsMixedSessions(t *testing.T) {
 	}
 	if got, err := SessionOf(nil); err != nil || got != nil {
 		t.Fatalf("SessionOf(nil) = %v, %v; want nil, nil", got, err)
+	}
+}
+
+func TestLoadRejectsMalformedIDs(t *testing.T) {
+	sessions := NewSessions(t.TempDir())
+	for _, id := range []string{"", "../escape", "not-hex", "aaaaaaaaaaaaaaa", "aaaaaaaaaaaaaaaz"} {
+		if _, err := sessions.Load(id); !errors.Is(err, ErrSessionUnknown) {
+			t.Errorf("Load(%q) = %v, want ErrSessionUnknown", id, err)
+		}
+	}
+}
+
+func TestLoadRejectsMismatchedContentID(t *testing.T) {
+	dir := t.TempDir()
+	sessions := NewSessions(dir)
+	sessDir := filepath.Join(dir, sessionsDir)
+	if err := os.MkdirAll(sessDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	doc := Session{
+		ID:        "bbbbbbbbbbbbbbbb",
+		CreatedAt: time.Now(),
+		ExpiresAt: time.Now().Add(time.Hour),
+		Names:     []string{"DEMO_KEY"},
+	}
+	b, err := json.Marshal(doc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(sessDir, "aaaaaaaaaaaaaaaa.json")
+	if err := os.WriteFile(path, b, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sessions.Load("aaaaaaaaaaaaaaaa"); !errors.Is(err, ErrSessionUnknown) {
+		t.Fatalf("Load with mismatched content id = %v, want ErrSessionUnknown", err)
+	}
+}
+
+func TestLoadPrefixRejectsAmbiguity(t *testing.T) {
+	dir := t.TempDir()
+	sessions := NewSessions(dir)
+	sessDir := filepath.Join(dir, sessionsDir)
+	if err := os.MkdirAll(sessDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"aaaaaaaaaaaaaaaa", "aaaaaaaabbbbbbbb"} {
+		doc := Session{
+			ID:        id,
+			CreatedAt: time.Now(),
+			ExpiresAt: time.Now().Add(time.Hour),
+			Names:     []string{"DEMO_KEY"},
+		}
+		b, err := json.Marshal(doc)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(sessDir, id+".json"), b, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if _, err := sessions.LoadPrefix("aaaaaaaa"); !errors.Is(err, ErrAmbiguousSession) {
+		t.Fatalf("ambiguous prefix = %v, want ErrAmbiguousSession", err)
+	}
+	sess, err := sessions.LoadPrefix("aaaaaaaab")
+	if err != nil {
+		t.Fatalf("unique prefix: %v", err)
+	}
+	if sess.ID != "aaaaaaaabbbbbbbb" {
+		t.Fatalf("unique prefix resolved to %q", sess.ID)
+	}
+	if _, err := sessions.LoadPrefix("cccccccc"); !errors.Is(err, ErrSessionUnknown) {
+		t.Fatalf("unknown prefix = %v, want ErrSessionUnknown", err)
 	}
 }

@@ -67,11 +67,19 @@ var (
 	// sessions. The audit record and binding check are per-session, so refuse
 	// rather than check one token against another session's bindings.
 	ErrMixedSessions = errors.New("tokens from multiple sessions cannot be redeemed in one command")
+	// ErrAmbiguousSession: a session id prefix matches more than one session.
+	// Picking one arbitrarily could enforce the wrong binding, so refuse.
+	ErrAmbiguousSession = errors.New("session id prefix is ambiguous")
 )
 
 var tokenRe = regexp.MustCompile(`\[\[keysmith:v1:([A-Za-z0-9_.-]{1,64}):([0-9a-f]{8})\]\]`)
 
 var nameRe = regexp.MustCompile(`^[A-Za-z0-9_.-]{1,64}$`)
+
+// Session ids are 16 lowercase hex characters (8 random bytes). A token
+// carries the first 8; --session may use a full id or a unique prefix.
+var sessionIDRe = regexp.MustCompile(`^[0-9a-f]{16}$`)
+var sessionPrefixRe = regexp.MustCompile(`^[0-9a-f]{1,16}$`)
 
 // ValueSource resolves a key name to its plaintext value. *store.Store
 // satisfies this. Implementations must return an error for unknown names.
@@ -205,14 +213,24 @@ func (s *Sessions) Current() (*Session, error) {
 	return s.Load(id)
 }
 
-// Load reads a session by full id, rejecting unknown or expired ones.
+// Load reads a session by full id, rejecting unknown or expired ones. The id
+// is validated before it is joined to the sessions directory, so a tampered
+// `current` file cannot turn this into a path traversal.
 func (s *Sessions) Load(id string) (*Session, error) {
+	if !sessionIDRe.MatchString(id) {
+		return nil, ErrSessionUnknown
+	}
 	b, err := os.ReadFile(filepath.Join(s.dir, id+".json"))
 	if err != nil {
 		return nil, ErrSessionUnknown
 	}
 	var sess Session
 	if err := json.Unmarshal(b, &sess); err != nil {
+		return nil, ErrSessionUnknown
+	}
+	// A copied or renamed session file whose content names a different id is
+	// not the session the caller asked for.
+	if sess.ID != id {
 		return nil, ErrSessionUnknown
 	}
 	if time.Now().After(sess.ExpiresAt) {
@@ -223,27 +241,35 @@ func (s *Sessions) Load(id string) (*Session, error) {
 
 // LoadPrefix resolves a full session id or its 8-character token prefix.
 // An unknown or nonexistent session prefix is reported as ErrSessionUnknown:
-// the caller holds a token that this store cannot honour.
+// the caller holds a token that this store cannot honour. A prefix matching
+// more than one session is refused rather than resolved to an arbitrary one.
 func (s *Sessions) LoadPrefix(prefix string) (*Session, error) {
-	if prefix == "" {
+	if !sessionPrefixRe.MatchString(prefix) {
 		return nil, ErrSessionUnknown
 	}
 	entries, err := os.ReadDir(s.dir)
 	if err != nil {
 		return nil, ErrSessionUnknown
 	}
+	match := ""
 	for _, e := range entries {
 		name := e.Name()
 		if !strings.HasSuffix(name, ".json") {
 			continue
 		}
 		id := strings.TrimSuffix(name, ".json")
-		if !strings.HasPrefix(id, prefix) {
+		if !sessionIDRe.MatchString(id) || !strings.HasPrefix(id, prefix) {
 			continue
 		}
-		return s.Load(id)
+		if match != "" {
+			return nil, fmt.Errorf("%w: %s", ErrAmbiguousSession, prefix)
+		}
+		match = id
 	}
-	return nil, ErrSessionUnknown
+	if match == "" {
+		return nil, ErrSessionUnknown
+	}
+	return s.Load(match)
 }
 
 // Issue records that name is available for redemption in the current session,

@@ -56,6 +56,8 @@ TOKEN=$(keysmith token DEMO_KEY --ttl 15m)
 - All tokens in one `run` must come from the same session. The audit record and
   target-binding check are per-session, so a mix is refused rather than checked
   against the wrong session's bindings.
+- Session ids and prefixes are validated as lowercase hex. An ambiguous
+  prefix is refused instead of selecting one session arbitrarily.
 
 ## `keysmith run`
 
