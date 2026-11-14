@@ -238,20 +238,26 @@ func readValueFile(inbox, path string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	fi, err := os.Stat(inside)
+	// Open before stat and refuse a final symlink: resolveInside checked the
+	// path a moment ago, but an agent that can write the inbox could swap the
+	// file for a symlink between that check and this open.
+	f, err := openNoFollow(inside)
 	if err != nil {
 		return "", fmt.Errorf("read value file: %w", err)
 	}
+	fi, err := f.Stat()
+	if err != nil {
+		_ = f.Close()
+		return "", fmt.Errorf("stat value file: %w", err)
+	}
 	if !fi.Mode().IsRegular() {
+		_ = f.Close()
 		return "", fmt.Errorf("value_file must be a regular file")
 	}
 	if fi.Size() > MaxValueFileBytes {
+		_ = f.Close()
 		_ = os.Remove(inside)
 		return "", fmt.Errorf("value_file is too large (max %d bytes)", MaxValueFileBytes)
-	}
-	f, err := os.Open(inside)
-	if err != nil {
-		return "", fmt.Errorf("read value file: %w", err)
 	}
 	b, readErr := io.ReadAll(io.LimitReader(f, MaxValueFileBytes+1))
 	closeErr := f.Close()
