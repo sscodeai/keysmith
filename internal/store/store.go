@@ -19,8 +19,8 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-	"strings"
 	"time"
+	"unicode"
 
 	"filippo.io/age"
 	"filippo.io/age/armor"
@@ -272,9 +272,25 @@ func (s *Store) writeEncrypted(m map[string]string) error {
 	return nil
 }
 
+// validKey rejects whitespace, '=', control characters and Unicode format
+// characters (bidi overrides, zero-width joiners). Keys are printed by
+// list/get/delete and reach a terminal, so ANSI escape sequences must not be
+// accepted as key names.
+func validKey(key string) bool {
+	if key == "" {
+		return false
+	}
+	for _, r := range key {
+		if r == '=' || unicode.IsSpace(r) || unicode.IsControl(r) || unicode.Is(unicode.Cf, r) {
+			return false
+		}
+	}
+	return true
+}
+
 // Set stores a secret value under key. Returns an error if key is invalid.
 func (s *Store) Set(key, value string) error {
-	if key == "" || strings.ContainsAny(key, " \t\n=") {
+	if !validKey(key) {
 		return fmt.Errorf("invalid key %q", key)
 	}
 	unlock, err := s.lock()

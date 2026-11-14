@@ -287,10 +287,22 @@ func TestPersistenceAcrossReopen(t *testing.T) {
 
 func TestInvalidKeyRejected(t *testing.T) {
 	s := newTestStore(t)
-	for _, bad := range []string{"", "has space", "has=equals", "tab\there"} {
+	for _, bad := range []string{
+		"",
+		"has space",
+		"has=equals",
+		"tab\there",
+		"newline\nhere",
+		"ansi\x1b[2J",
+		"nbsp\u00a0here",
+		"bidi\u202ehere",
+	} {
 		if err := s.Set(bad, "v"); err == nil {
 			t.Errorf("Set(%q) should error", bad)
 		}
+	}
+	if err := s.Set("VALID.KEY-1", "v"); err != nil {
+		t.Errorf("Set(valid key) = %v, want nil", err)
 	}
 }
 
