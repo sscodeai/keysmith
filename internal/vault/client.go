@@ -14,7 +14,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -41,8 +43,28 @@ type DBCreds struct {
 	ExpiresAt time.Time `json:"-"`
 }
 
-// NewClient creates a Vault client. addr is like "http://127.0.0.1:8200".
-func NewClient(addr, token, kvPrefix string) *Client {
+// NewClient creates a Vault client. addr is like "https://vault.example:8200"
+// or "http://127.0.0.1:8200" (plain HTTP is allowed only on loopback).
+func NewClient(addr, token, kvPrefix string) (*Client, error) {
+	u, err := url.Parse(addr)
+	if err != nil {
+		return nil, fmt.Errorf("vault address: %w", err)
+	}
+	switch strings.ToLower(u.Scheme) {
+	case "https":
+	case "http":
+		if !isLoopback(u.Hostname()) {
+			return nil, fmt.Errorf("vault address %q uses http: plain http is only allowed for loopback addresses", u.Host)
+		}
+	default:
+		return nil, fmt.Errorf("vault address %q must use https (or http on loopback)", addr)
+	}
+	if u.Hostname() == "" {
+		return nil, fmt.Errorf("vault address %q has no host", addr)
+	}
+	if u.RawQuery != "" || u.Fragment != "" {
+		return nil, fmt.Errorf("vault address %q must not carry a query string or fragment", addr)
+	}
 	if kvPrefix == "" {
 		kvPrefix = "secret"
 	}
@@ -51,7 +73,18 @@ func NewClient(addr, token, kvPrefix string) *Client {
 		token:    token,
 		http:     &http.Client{Timeout: 10 * time.Second},
 		kvPrefix: strings.TrimSuffix(kvPrefix, "/"),
+	}, nil
+}
+
+func isLoopback(host string) bool {
+	h := strings.ToLower(host)
+	if h == "localhost" {
+		return true
 	}
+	if ip := net.ParseIP(h); ip != nil {
+		return ip.IsLoopback()
+	}
+	return false
 }
 
 // Health checks Vault reachability.

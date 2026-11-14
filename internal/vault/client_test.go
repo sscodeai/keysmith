@@ -64,7 +64,42 @@ func newMockVault(t *testing.T) (*httptest.Server, *Client) {
 	})
 
 	srv := httptest.NewServer(mux)
-	return srv, NewClient(srv.URL, "test-token", "secret")
+	c, err := NewClient(srv.URL, "test-token", "secret")
+	if err != nil {
+		srv.Close()
+		t.Fatalf("NewClient(%q): %v", srv.URL, err)
+	}
+	return srv, c
+}
+
+func TestNewClientAddressPolicy(t *testing.T) {
+	ok := []string{
+		"https://vault.example.test:8200",
+		"https://vault.example.test/vault",
+		"http://127.0.0.1:8200",
+		"http://localhost:8200",
+		"http://[::1]:8200",
+	}
+	for _, addr := range ok {
+		if _, err := NewClient(addr, "token", "secret"); err != nil {
+			t.Errorf("NewClient(%q) = %v, want nil", addr, err)
+		}
+	}
+
+	bad := []string{
+		"http://192.168.1.10:8200",
+		"http://vault.example.test:8200",
+		"ftp://vault.example.test",
+		"https://",
+		"https://vault.example.test/?x=1",
+		"https://vault.example.test/#frag",
+		"",
+	}
+	for _, addr := range bad {
+		if _, err := NewClient(addr, "token", "secret"); err == nil {
+			t.Errorf("NewClient(%q) = nil error, want address policy refusal", addr)
+		}
+	}
 }
 
 func TestHealth(t *testing.T) {

@@ -72,7 +72,7 @@ keysmith -store ~/.keysmith -http 0.0.0.0:8080 \
   -http-tls-cert server.crt -http-tls-key server.key
 ```
 
-HashiCorp Vault をバックエンドとして使用します。短 TTL の動的シークレットに対応します。
+HashiCorp Vault をバックエンドとして使用します。短 TTL の動的シークレットに対応します。リモートの Vault は `https` を使用してください。平文 `http` はループバックのみ許可されます。
 
 ```sh
 export VAULT_TOKEN=<token>

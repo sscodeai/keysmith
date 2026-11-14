@@ -87,7 +87,8 @@ keysmith -store ~/.keysmith -http 0.0.0.0:8080 \
   -http-tls-cert server.crt -http-tls-key server.key
 ```
 
-Use HashiCorp Vault as the backend (dynamic short-TTL secrets):
+Use HashiCorp Vault as the backend (dynamic short-TTL secrets). Remote Vault
+addresses must use `https`; plain `http` is accepted only for loopback:
 
 ```sh
 export VAULT_TOKEN=<token>

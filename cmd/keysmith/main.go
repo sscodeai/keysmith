@@ -53,7 +53,7 @@ func main() {
 	httpTLSCert := flag.String("http-tls-cert", "", "with -http: PEM certificate chain to serve TLS")
 	httpTLSKey := flag.String("http-tls-key", "", "with -http: PEM private key to serve TLS")
 	streamable := flag.Bool("streamable", false, "with -http: use Streamable HTTP (MCP 2025) instead of SSE")
-	vaultAddr := flag.String("vault", "", "HashiCorp Vault address (e.g. http://127.0.0.1:8200) — use Vault as backend")
+	vaultAddr := flag.String("vault", "", "HashiCorp Vault address (https, or http on loopback) — use Vault as backend")
 	showVer := flag.Bool("version", false, "print version and exit")
 	flag.Parse()
 
@@ -163,7 +163,7 @@ func runCLI(storeDir, vaultAddr string, args []string) error {
 		if token == "" {
 			return nil, fmt.Errorf("VAULT_TOKEN env var required")
 		}
-		return vault.NewClient(vaultAddr, token, "secret"), nil
+		return vault.NewClient(vaultAddr, token, "secret")
 	}
 
 	switch cmd {
