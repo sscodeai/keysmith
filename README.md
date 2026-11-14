@@ -244,7 +244,8 @@ itself, transports decide how agents connect.
   file is deleted after it is read. A path outside the inbox is refused, so the
   tool cannot be used as an arbitrary-file read or unlink.
 - **In context**: masked values only. Masking keeps first/last 2 chars
-  (`sk******ij`) so credentials are distinguishable without being revealed.
+  (`sk******ij`) so credentials are distinguishable without being revealed;
+  values of four characters or fewer are masked completely (`***`).
 - **At use time**: `keysmith run` redeems a session-bound token locally and
   places the value in the child's environment. Values never reach `argv`, the
   audit log, or a model request; every failure aborts before the command starts
@@ -280,9 +281,9 @@ machine safe. Specifically:
 - The bundled agent skill is **guidance, not access control**: nothing stops an
   agent from `cat`-ing a file that was never in the store. The enforced paths are
   the store API, the masked views, and the redemption layer.
-- Masking discloses the first and last two characters of a value
-  (`sk******ij`) so credentials stay distinguishable — a deliberate, small
-  disclosure.
+- Masking discloses the first and last two characters of a value longer than
+  four characters (`sk******ij`) so credentials stay distinguishable — a
+  deliberate, small disclosure. Shorter values are masked completely.
 - Masked views and the leak-scanner are best-effort detection, not proof: a
   value that is never matched is never masked.
 

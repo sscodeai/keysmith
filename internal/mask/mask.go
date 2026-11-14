@@ -218,7 +218,8 @@ func MaskURL(raw string) string {
 // maskPlain masks a plain string keeping first and last 2 chars.
 func maskPlain(s string) string {
 	if len(s) <= 4 {
-		return s[:min(1, len(s))] + "***" // very short: keep first char
+		// Too short to keep any character without revealing the whole value.
+		return "***"
 	}
 	return s[:2] + "******" + s[len(s)-2:]
 }
@@ -248,11 +249,4 @@ func entropy(s string) float64 {
 		e -= p * math.Log2(p)
 	}
 	return e
-}
-
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
 }

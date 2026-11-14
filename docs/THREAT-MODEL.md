@@ -61,7 +61,8 @@ implying otherwise.
   the path; it does not close `cat`.
 - Masked views (`sk******01`) keep the first and last two characters so
   credentials stay distinguishable. That is a deliberate small disclosure — a
-  mask is not a zero-information artefact.
+  mask is not a zero-information artefact. Values of four characters or fewer
+  are masked completely, because there is no safe character to keep.
 - Nested redemption is not supported: a stored value that itself contains a
   `[[keysmith:…]]` token is never re-expanded.
 - The MCP HTTP listener is a separate control channel: plain `-http` is

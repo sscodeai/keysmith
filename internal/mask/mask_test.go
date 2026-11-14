@@ -92,6 +92,14 @@ func TestMaskKeyUsesTheKeyName(t *testing.T) {
 	}
 }
 
+func TestMaskShortSensitiveValuesCompletely(t *testing.T) {
+	for _, v := range []string{"x", "ab", "abc", "abcd"} {
+		if got := MaskKey("DB_PASSWORD", v); got != "***" {
+			t.Errorf("MaskKey(DB_PASSWORD, %q) = %q, want ***", v, got)
+		}
+	}
+}
+
 func TestRedactAlwaysMasks(t *testing.T) {
 	for _, v := range []string{"correcthorsebatterystaple", "hunter2", "postgres://u:pass@h/db"} {
 		if got := Redact(v); got == v {
