@@ -135,6 +135,43 @@ func TestScanExactValueAndAutoRotate(t *testing.T) {
 	}
 }
 
+func TestAutoRotateRotatesEachKeyOnce(t *testing.T) {
+	storeDir := t.TempDir()
+	st, err := store.New(storeDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secret := "sk-REPEATED-LEAK-1234567890abcdef"
+	if err := st.Set("DEPLOY_KEY", secret); err != nil {
+		t.Fatal(err)
+	}
+
+	repo := t.TempDir()
+	setupRepo(t, repo, "app.env", "first="+secret+"\nsecond="+secret+"\n")
+	results, err := ScanGitHistory(repo, st, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var masked []string
+	for _, r := range results {
+		if r.Key == "DEPLOY_KEY" && r.Pattern == "exact-value" {
+			if !r.Rotated {
+				t.Error("exact-value result should be rotated")
+			}
+			masked = append(masked, r.NewMasked)
+		}
+	}
+	if len(masked) < 2 {
+		t.Fatalf("expected at least two matching lines, got %d", len(masked))
+	}
+	for _, m := range masked[1:] {
+		if m != masked[0] {
+			t.Errorf("same key reported different rotations: %q vs %q", masked[0], m)
+		}
+	}
+}
+
 func TestIsSecretPatternSkipsComments(t *testing.T) {
 	cases := []struct {
 		line string

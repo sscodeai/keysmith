@@ -37,7 +37,9 @@ func ScanGitHistory(repoDir string, st *store.Store, autoRotate bool) ([]ScanRes
 	var results []ScanResult
 
 	// Collect store values for exact-match scanning.
-	values := map[string]string{} // masked value -> original key
+	values := map[string]string{} // plaintext value -> original key
+	rotatedKeys := map[string]bool{}
+	rotatedMasked := map[string]string{}
 	if st != nil {
 		keys, err := st.SortedKeys()
 		if err == nil {
@@ -79,16 +81,21 @@ func ScanGitHistory(repoDir string, st *store.Store, autoRotate bool) ([]ScanRes
 			return
 		}
 
-		// 1) Exact value match against store.
-		rotated := false
+		// 1) Exact value match against store. Rotate each key at most once
+		// per scan, no matter how many lines still contain the old value.
 		for val, key := range values {
 			if strings.Contains(trimmed, val) {
-				res := ScanResult{Key: key, Pattern: "exact-value", Location: redactLine(line), Rotated: rotated}
-				if autoRotate && !rotated {
-					if _, err := st.Rotate(key, 32); err == nil {
+				res := ScanResult{Key: key, Pattern: "exact-value", Location: redactLine(line)}
+				if autoRotate {
+					if !rotatedKeys[key] {
+						if masked, err := st.Rotate(key, 32); err == nil {
+							rotatedKeys[key] = true
+							rotatedMasked[key] = masked
+						}
+					}
+					if rotatedKeys[key] {
 						res.Rotated = true
-						res.NewMasked = mask.MaskKey(key, mustGet(st, key))
-						rotated = true
+						res.NewMasked = rotatedMasked[key]
 					}
 				}
 				results = append(results, res)
@@ -177,14 +184,6 @@ func redactLine(line string) string {
 		}
 	}
 	return mask.Redact(trimmed)
-}
-
-func mustGet(st *store.Store, key string) string {
-	v, err := st.Get(key)
-	if err != nil {
-		return ""
-	}
-	return v
 }
 
 // Format renders scan results for human consumption (masked).
