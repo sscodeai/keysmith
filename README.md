@@ -238,8 +238,11 @@ itself, transports decide how agents connect.
 
 ## Security model
 
-- **At rest**: always age-encrypted (X25519), armor format. A plaintext file
-  never exists on disk. Atomic writes (temp + rename), `0600` perms.
+- **At rest**: the store's secret data is always age-encrypted (X25519),
+  armor format; `secrets.enc` never contains plaintext key material. Atomic
+  writes (temp + rename), `0600` perms. `key.txt` is the age private key and
+  must stay `0600`; the `put` inbox is a transient plaintext staging file that
+  is deleted after it is read.
 - **In transcripts**: `put` never takes the plaintext as an argument — it
   reads a file path, and only inside the store inbox (`keysmith inbox`); the
   file is deleted after it is read. A path outside the inbox is refused, so the
