@@ -135,7 +135,19 @@ func (s *Store) ensureKey() error {
 	keyPath := s.KeyPath()
 	if _, err := os.Stat(keyPath); err == nil {
 		return nil
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("stat key file: %w", err)
 	}
+
+	// A missing key with an existing data file is not a new store: generating
+	// a fresh key here would silently leave secrets.enc undecryptable. Fail
+	// closed and let the user restore the key or explicitly move the data.
+	if _, err := os.Stat(s.DataPath()); err == nil {
+		return fmt.Errorf("key.txt is missing while secrets.enc exists: restore the key, or move/remove secrets.enc to start a new store")
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("stat data file: %w", err)
+	}
+
 	identity, err := age.GenerateX25519Identity()
 	if err != nil {
 		return fmt.Errorf("generate age identity: %w", err)
@@ -145,10 +157,8 @@ func (s *Store) ensureKey() error {
 		return fmt.Errorf("write key file: %w", err)
 	}
 	// Ensure data file exists (empty encrypted blob).
-	if _, err := os.Stat(s.DataPath()); os.IsNotExist(err) {
-		if err := s.writeEncrypted(map[string]string{}); err != nil {
-			return err
-		}
+	if err := s.writeEncrypted(map[string]string{}); err != nil {
+		return err
 	}
 	return nil
 }

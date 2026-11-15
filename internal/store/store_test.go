@@ -112,6 +112,30 @@ func TestNewSecuresEmptyLooseDir(t *testing.T) {
 	}
 }
 
+func TestNewRefusesMissingKeyWithExistingData(t *testing.T) {
+	dir := t.TempDir()
+	s, err := New(dir)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := s.Set("API_KEY", "sk-test-value-1234567890"); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	if err := os.Remove(s.KeyPath()); err != nil {
+		t.Fatalf("remove key: %v", err)
+	}
+
+	if _, err := New(dir); err == nil {
+		t.Fatal("New generated a replacement key while secrets.enc existed")
+	}
+	if _, err := os.Stat(s.KeyPath()); !os.IsNotExist(err) {
+		t.Errorf("key file was recreated after the refusal: %v", err)
+	}
+	if _, err := os.Stat(s.DataPath()); err != nil {
+		t.Errorf("data file was removed after the refusal: %v", err)
+	}
+}
+
 func TestSetGet(t *testing.T) {
 	s := newTestStore(t)
 	if err := s.Set("API_KEY", "sk-test1234567890"); err != nil {
