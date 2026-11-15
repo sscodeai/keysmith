@@ -108,10 +108,15 @@ Configure it in your MCP client (Claude Code, Cursor, etc.):
 }
 ```
 
-The store directory is created on first run with `0600` permissions, holding:
+The store directory is created on first run with `0700` permissions, holding:
 
 - `key.txt` — your age private key (NEVER share; keep `0600`)
 - `secrets.enc` — armored age-encrypted secrets blob
+
+If `-store` names an existing directory, an empty directory is tightened to
+`0700`; a non-empty directory that is not already a keysmith store must
+already be `0700`, because keysmith refuses to chmod an unrelated directory.
+Run `chmod 700 DIR` or choose a new directory.
 
 ## CLI
 
